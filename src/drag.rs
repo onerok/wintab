@@ -209,11 +209,14 @@ fn handle_peek_drop(drag: DragState, x: i32, y: i32) {
     unsafe {
         ClientToScreen(drag.source_overlay, &mut screen_pt);
     }
-    let target_hwnd = unsafe { WindowFromPoint(screen_pt) };
     let peek_source = drag.peek_target;
 
     state::with_state(|s| {
         s.hide_peek();
+
+        // Query target AFTER hide_peek so the peek overlay (TOPMOST) doesn't
+        // intercept WindowFromPoint and shadow the real drop target.
+        let target_hwnd = unsafe { WindowFromPoint(screen_pt) };
 
         let target_group = s.overlays.group_for_overlay(target_hwnd);
 
