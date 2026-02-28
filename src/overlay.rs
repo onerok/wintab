@@ -34,6 +34,7 @@ static OVERLAY_CLASS_UTF16: &[u16] = &[
 struct OverlayData {
     group_id: GroupId,
     hover_tab: i32,
+    peek_hwnd: HWND,
 }
 
 fn get_x_lparam(lparam: isize) -> i32 {
@@ -81,6 +82,7 @@ pub fn create_overlay(group_id: GroupId) -> HWND {
             let data = Box::new(OverlayData {
                 group_id,
                 hover_tab: -1,
+                peek_hwnd: std::ptr::null_mut(),
             });
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(data) as isize);
         }
@@ -96,6 +98,233 @@ pub fn destroy_overlay(hwnd: HWND) {
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
         }
         DestroyWindow(hwnd);
+    }
+}
+
+pub fn create_peek_overlay(target_hwnd: HWND) -> HWND {
+    unsafe {
+        let instance = GetModuleHandleW(std::ptr::null());
+        let hwnd = CreateWindowExW(
+            WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
+            OVERLAY_CLASS_UTF16.as_ptr(),
+            std::ptr::null(),
+            WS_POPUP,
+            0, 0, 100, TAB_HEIGHT,
+            0 as _, 0 as _, instance, std::ptr::null(),
+        );
+
+        if !hwnd.is_null() {
+            let data = Box::new(OverlayData {
+                group_id: 0,
+                hover_tab: -1,
+                peek_hwnd: target_hwnd,
+            });
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(data) as isize);
+        }
+        hwnd
+    }
+}
+
+pub fn is_peek_overlay(hwnd: HWND) -> bool {
+    unsafe {
+        let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const OverlayData;
+        if ptr.is_null() {
+            return false;
+        }
+        !(*ptr).peek_hwnd.is_null()
+    }
+}
+
+pub fn peek_target(hwnd: HWND) -> HWND {
+    unsafe {
+        let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const OverlayData;
+        if ptr.is_null() {
+            return std::ptr::null_mut();
+        }
+        (*ptr).peek_hwnd
+    }
+}
+
+pub fn update_peek_overlay(
+    overlay_hwnd: HWND,
+    target_hwnd: HWND,
+    windows: &HashMap<HWND, WindowInfo>,
+) {
+    if window::is_minimized(target_hwnd) {
+        unsafe {
+            ShowWindow(overlay_hwnd, SW_HIDE);
+        }
+        return;
+    }
+
+    let rect = window::get_window_rect(target_hwnd);
+    let width = rect.right - rect.left;
+
+    unsafe {
+        SetWindowPos(
+            overlay_hwnd,
+            HWND_TOPMOST,
+            rect.left,
+            rect.top - TAB_HEIGHT,
+            width,
+            TAB_HEIGHT,
+            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        );
+    }
+
+    paint_peek_tab(overlay_hwnd, &rect, windows.get(&target_hwnd));
+}
+
+fn update_peek_overlay_standalone(overlay_hwnd: HWND) {
+    let target = peek_target(overlay_hwnd);
+    if target.is_null() {
+        return;
+    }
+    state::with_state(|s| {
+        update_peek_overlay(overlay_hwnd, target, &s.windows);
+    });
+}
+
+fn paint_peek_tab(overlay_hwnd: HWND, rect: &RECT, info: Option<&WindowInfo>) {
+    unsafe {
+        let width = (rect.right - rect.left).max(1);
+        let height = TAB_HEIGHT;
+
+        let hdc_screen = GetDC(0 as _);
+        let hdc_mem = CreateCompatibleDC(hdc_screen);
+
+        let bmi = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: width,
+                biHeight: -height,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB,
+                biSizeImage: 0,
+                biXPelsPerMeter: 0,
+                biYPelsPerMeter: 0,
+                biClrUsed: 0,
+                biClrImportant: 0,
+            },
+            bmiColors: [RGBQUAD {
+                rgbBlue: 0,
+                rgbGreen: 0,
+                rgbRed: 0,
+                rgbReserved: 0,
+            }],
+        };
+
+        let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
+        let hbmp = CreateDIBSection(hdc_mem, &bmi, DIB_RGB_COLORS, &mut bits, 0 as _, 0);
+        if hbmp.is_null() || bits.is_null() {
+            DeleteDC(hdc_mem);
+            ReleaseDC(0 as _, hdc_screen);
+            return;
+        }
+        let old_bmp = SelectObject(hdc_mem, hbmp);
+
+        let pixel_count = (width * height) as usize;
+        std::ptr::write_bytes(bits as *mut u32, 0, pixel_count);
+
+        let hover_tab = {
+            let ptr = GetWindowLongPtrW(overlay_hwnd, GWLP_USERDATA) as *const OverlayData;
+            if !ptr.is_null() {
+                (*ptr).hover_tab
+            } else {
+                -1
+            }
+        };
+
+        let is_hover = hover_tab == 0;
+        let tab_width = width.clamp(MIN_TAB_WIDTH, MAX_TAB_WIDTH);
+        let color = if is_hover { COLOR_HOVER } else { COLOR_ACTIVE };
+
+        fill_rect_alpha(
+            bits as *mut u32,
+            width,
+            height,
+            0,
+            0,
+            tab_width,
+            height,
+            color,
+            if is_hover { 220 } else { 180 },
+        );
+
+        if let Some(info) = info {
+            let font_name: Vec<u16> = "Segoe UI\0".encode_utf16().collect();
+            let font = CreateFontW(
+                14, 0, 0, 0,
+                FW_NORMAL as i32, 0, 0, 0,
+                DEFAULT_CHARSET as u32,
+                OUT_DEFAULT_PRECIS as u32,
+                CLIP_DEFAULT_PRECIS as u32,
+                CLEARTYPE_QUALITY as u32,
+                (DEFAULT_PITCH | FF_SWISS) as u32,
+                font_name.as_ptr(),
+            );
+            let old_font = SelectObject(hdc_mem, font);
+            SetBkMode(hdc_mem, TRANSPARENT as i32);
+            SetTextColor(hdc_mem, COLOR_TEXT);
+
+            if !info.icon.is_null() {
+                DrawIconEx(
+                    hdc_mem,
+                    TAB_PADDING,
+                    (height - ICON_SIZE) / 2,
+                    info.icon,
+                    ICON_SIZE,
+                    ICON_SIZE,
+                    0,
+                    0 as _,
+                    DI_NORMAL,
+                );
+            }
+
+            let text: Vec<u16> = info.title.encode_utf16().chain(std::iter::once(0)).collect();
+            let mut text_rect = RECT {
+                left: TAB_PADDING + ICON_SIZE + 4,
+                top: 0,
+                right: tab_width - TAB_PADDING,
+                bottom: height,
+            };
+            DrawTextW(
+                hdc_mem,
+                text.as_ptr(),
+                text.len() as i32 - 1,
+                &mut text_rect,
+                DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX,
+            );
+
+            SelectObject(hdc_mem, old_font);
+            DeleteObject(font);
+        }
+
+        fix_gdi_alpha(bits as *mut u32, pixel_count);
+
+        let pt_src = POINT { x: 0, y: 0 };
+        let size = SIZE { cx: width, cy: height };
+        let pt_dst = POINT {
+            x: rect.left,
+            y: rect.top - TAB_HEIGHT,
+        };
+        let blend = BLENDFUNCTION {
+            BlendOp: AC_SRC_OVER as u8,
+            BlendFlags: 0,
+            SourceConstantAlpha: 255,
+            AlphaFormat: AC_SRC_ALPHA as u8,
+        };
+
+        UpdateLayeredWindow(
+            overlay_hwnd, hdc_screen, &pt_dst, &size,
+            hdc_mem, &pt_src, 0, &blend, ULW_ALPHA,
+        );
+
+        SelectObject(hdc_mem, old_bmp);
+        DeleteObject(hbmp);
+        DeleteDC(hdc_mem);
+        ReleaseDC(0 as _, hdc_screen);
     }
 }
 
@@ -166,7 +395,7 @@ fn paint_tabs(
                 biHeight: -height,
                 biPlanes: 1,
                 biBitCount: 32,
-                biCompression: BI_RGB as u32,
+                biCompression: BI_RGB,
                 biSizeImage: 0,
                 biXPelsPerMeter: 0,
                 biYPelsPerMeter: 0,
@@ -282,6 +511,8 @@ fn paint_tabs(
             }
         }
 
+        fix_gdi_alpha(bits as *mut u32, pixel_count);
+
         let pt_src = POINT { x: 0, y: 0 };
         let size = SIZE { cx: width, cy: height };
         let pt_dst = POINT {
@@ -306,6 +537,18 @@ fn paint_tabs(
         DeleteObject(hbmp);
         DeleteDC(hdc_mem);
         ReleaseDC(0 as _, hdc_screen);
+    }
+}
+
+/// Fix alpha channel for pixels affected by GDI text/icon rendering.
+/// GDI functions like DrawTextW zero out the alpha channel on 32-bit DIBs,
+/// creating transparent holes that the mouse falls through on layered windows.
+unsafe fn fix_gdi_alpha(pixels: *mut u32, count: usize) {
+    for i in 0..count {
+        let p = *pixels.add(i);
+        if (p >> 24) == 0 && (p & 0x00FFFFFF) != 0 {
+            *pixels.add(i) = p | 0xFF000000;
+        }
     }
 }
 
@@ -337,6 +580,7 @@ fn calculate_tab_index(x: i32, width: i32, tab_count: i32) -> Option<usize> {
 }
 
 /// Fill a rectangle in a 32-bit ARGB pixel buffer with premultiplied alpha.
+#[allow(clippy::too_many_arguments)]
 fn fill_rect_alpha(
     pixels: *mut u32,
     stride: i32,
@@ -397,8 +641,12 @@ fn set_hover_tab(overlay_hwnd: HWND, tab_index: i32) {
         let data = &mut *ptr;
         if data.hover_tab != tab_index {
             data.hover_tab = tab_index;
-            // Called from wndproc (outside with_state), safe to use standalone
-            update_overlay_standalone(overlay_hwnd, data.group_id);
+            if !data.peek_hwnd.is_null() {
+                update_peek_overlay_standalone(overlay_hwnd);
+            } else {
+                // Called from wndproc (outside with_state), safe to use standalone
+                update_overlay_standalone(overlay_hwnd, data.group_id);
+            }
         }
     }
 }
@@ -412,15 +660,21 @@ unsafe extern "system" fn overlay_wnd_proc(
     match msg {
         WM_LBUTTONDOWN => {
             let x = get_x_lparam(lparam);
-            if let Some((group_id, tab_index)) = hit_test_tab(hwnd, x) {
-                crate::drag::on_mouse_down(hwnd, group_id, tab_index, x, get_y_lparam(lparam));
+            let y = get_y_lparam(lparam);
+            let target = peek_target(hwnd);
+            if !target.is_null() {
+                crate::drag::on_peek_mouse_down(hwnd, target, x, y);
+            } else if let Some((group_id, tab_index)) = hit_test_tab(hwnd, x) {
+                crate::drag::on_mouse_down(hwnd, group_id, tab_index, x, y);
             }
             0
         }
         WM_MOUSEMOVE => {
             let x = get_x_lparam(lparam);
 
-            if let Some((_gid, tab_index)) = hit_test_tab(hwnd, x) {
+            if is_peek_overlay(hwnd) {
+                set_hover_tab(hwnd, 0);
+            } else if let Some((_gid, tab_index)) = hit_test_tab(hwnd, x) {
                 set_hover_tab(hwnd, tab_index as i32);
             } else {
                 set_hover_tab(hwnd, -1);
@@ -455,6 +709,124 @@ unsafe extern "system" fn overlay_wnd_proc(
             0
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+    }
+}
+
+pub fn create_drop_preview() -> HWND {
+    unsafe {
+        let instance = GetModuleHandleW(std::ptr::null());
+        CreateWindowExW(
+            WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST
+                | WS_EX_TRANSPARENT,
+            OVERLAY_CLASS_UTF16.as_ptr(),
+            std::ptr::null(),
+            WS_POPUP,
+            0, 0, 100, TAB_HEIGHT,
+            0 as _, 0 as _, instance, std::ptr::null(),
+        )
+    }
+}
+
+pub fn show_drop_preview(preview_hwnd: HWND, target_hwnd: HWND) {
+    let rect = window::get_window_rect(target_hwnd);
+    let width = rect.right - rect.left;
+
+    unsafe {
+        SetWindowPos(
+            preview_hwnd,
+            HWND_TOPMOST,
+            rect.left,
+            rect.top - TAB_HEIGHT,
+            width,
+            TAB_HEIGHT,
+            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        );
+    }
+
+    paint_drop_preview(preview_hwnd, &rect);
+}
+
+fn paint_drop_preview(preview_hwnd: HWND, rect: &RECT) {
+    unsafe {
+        let width = (rect.right - rect.left).max(1);
+        let height = TAB_HEIGHT;
+
+        let hdc_screen = GetDC(0 as _);
+        let hdc_mem = CreateCompatibleDC(hdc_screen);
+
+        let bmi = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: width,
+                biHeight: -height,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB,
+                biSizeImage: 0,
+                biXPelsPerMeter: 0,
+                biYPelsPerMeter: 0,
+                biClrUsed: 0,
+                biClrImportant: 0,
+            },
+            bmiColors: [RGBQUAD {
+                rgbBlue: 0,
+                rgbGreen: 0,
+                rgbRed: 0,
+                rgbReserved: 0,
+            }],
+        };
+
+        let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
+        let hbmp = CreateDIBSection(hdc_mem, &bmi, DIB_RGB_COLORS, &mut bits, 0 as _, 0);
+        if hbmp.is_null() || bits.is_null() {
+            DeleteDC(hdc_mem);
+            ReleaseDC(0 as _, hdc_screen);
+            return;
+        }
+        let old_bmp = SelectObject(hdc_mem, hbmp);
+
+        let pixel_count = (width * height) as usize;
+        std::ptr::write_bytes(bits as *mut u32, 0, pixel_count);
+
+        // Semi-transparent fill
+        fill_rect_alpha(bits as *mut u32, width, height, 0, 0, width, height, COLOR_ACTIVE, 60);
+
+        // 2px border
+        let border = 2;
+        let ba: u8 = 220;
+        fill_rect_alpha(bits as *mut u32, width, height, 0, 0, width, border, COLOR_HOVER, ba); // top
+        fill_rect_alpha(bits as *mut u32, width, height, 0, height - border, width, border, COLOR_HOVER, ba); // bottom
+        fill_rect_alpha(bits as *mut u32, width, height, 0, 0, border, height, COLOR_HOVER, ba); // left
+        fill_rect_alpha(bits as *mut u32, width, height, width - border, 0, border, height, COLOR_HOVER, ba); // right
+
+        let pt_src = POINT { x: 0, y: 0 };
+        let size = SIZE { cx: width, cy: height };
+        let pt_dst = POINT {
+            x: rect.left,
+            y: rect.top - TAB_HEIGHT,
+        };
+        let blend = BLENDFUNCTION {
+            BlendOp: AC_SRC_OVER as u8,
+            BlendFlags: 0,
+            SourceConstantAlpha: 255,
+            AlphaFormat: AC_SRC_ALPHA as u8,
+        };
+
+        UpdateLayeredWindow(
+            preview_hwnd, hdc_screen, &pt_dst, &size,
+            hdc_mem, &pt_src, 0, &blend, ULW_ALPHA,
+        );
+
+        SelectObject(hdc_mem, old_bmp);
+        DeleteObject(hbmp);
+        DeleteDC(hdc_mem);
+        ReleaseDC(0 as _, hdc_screen);
+    }
+}
+
+pub fn hide_drop_preview(preview_hwnd: HWND) {
+    unsafe {
+        ShowWindow(preview_hwnd, SW_HIDE);
     }
 }
 

@@ -23,10 +23,17 @@ struct DragState {
     start_x: i32,
     start_y: i32,
     dragging: bool,
+    peek_target: HWND,
+}
+
+struct DropPreview {
+    overlay_hwnd: HWND,
+    target_hwnd: HWND,
 }
 
 thread_local! {
-    static DRAG: RefCell<Option<DragState>> = RefCell::new(None);
+    static DRAG: RefCell<Option<DragState>> = const { RefCell::new(None) };
+    static DROP_PREVIEW: RefCell<Option<DropPreview>> = const { RefCell::new(None) };
 }
 
 pub fn on_mouse_down(overlay_hwnd: HWND, group_id: GroupId, tab_index: usize, x: i32, y: i32) {
@@ -44,16 +51,35 @@ pub fn on_mouse_down(overlay_hwnd: HWND, group_id: GroupId, tab_index: usize, x:
             start_x: pt.x,
             start_y: pt.y,
             dragging: false,
+            peek_target: std::ptr::null_mut(),
+        });
+    });
+}
+
+pub fn on_peek_mouse_down(overlay_hwnd: HWND, target_hwnd: HWND, x: i32, y: i32) {
+    let mut pt = POINT { x, y };
+    unsafe {
+        ClientToScreen(overlay_hwnd, &mut pt);
+        SetCapture(overlay_hwnd);
+    }
+
+    DRAG.with(|d| {
+        *d.borrow_mut() = Some(DragState {
+            source_overlay: overlay_hwnd,
+            source_group: 0,
+            source_tab: 0,
+            start_x: pt.x,
+            start_y: pt.y,
+            dragging: false,
+            peek_target: target_hwnd,
         });
     });
 }
 
 pub fn on_mouse_move(overlay_hwnd: HWND, x: i32, y: i32) {
-    DRAG.with(|d| {
+    let drag_info = DRAG.with(|d| {
         let mut drag_opt = d.borrow_mut();
-        let Some(drag) = drag_opt.as_mut() else {
-            return;
-        };
+        let drag = drag_opt.as_mut()?;
 
         let mut pt = POINT { x, y };
         unsafe {
@@ -70,10 +96,22 @@ pub fn on_mouse_move(overlay_hwnd: HWND, x: i32, y: i32) {
                 }
             }
         }
+
+        if drag.dragging {
+            Some((pt, drag.peek_target, drag.source_group, drag.source_tab))
+        } else {
+            None
+        }
     });
+
+    if let Some((screen_pt, peek_target, source_group, source_tab)) = drag_info {
+        update_drop_preview(screen_pt, peek_target, source_group, source_tab);
+    }
 }
 
 pub fn on_mouse_up(_overlay_hwnd: HWND, x: i32, y: i32) {
+    cleanup_drop_preview();
+
     unsafe {
         ReleaseCapture();
     }
@@ -82,6 +120,11 @@ pub fn on_mouse_up(_overlay_hwnd: HWND, x: i32, y: i32) {
     let Some(drag) = drag else {
         return;
     };
+
+    if !drag.peek_target.is_null() {
+        handle_peek_drop(drag, x, y);
+        return;
+    }
 
     if !drag.dragging {
         // Click — switch tabs
@@ -155,8 +198,129 @@ pub fn on_mouse_up(_overlay_hwnd: HWND, x: i32, y: i32) {
     });
 }
 
+fn handle_peek_drop(drag: DragState, x: i32, y: i32) {
+    if !drag.dragging {
+        // Click on peek tab — just hide peek
+        state::with_state(|s| s.hide_peek());
+        return;
+    }
+
+    let mut screen_pt = POINT { x, y };
+    unsafe {
+        ClientToScreen(drag.source_overlay, &mut screen_pt);
+    }
+    let target_hwnd = unsafe { WindowFromPoint(screen_pt) };
+    let peek_source = drag.peek_target;
+
+    state::with_state(|s| {
+        s.hide_peek();
+
+        let target_group = s.overlays.group_for_overlay(target_hwnd);
+
+        if let Some(target_gid) = target_group {
+            // Drop on a group overlay — add to that group
+            s.groups.add_to_group(target_gid, peek_source);
+            let ov = s.overlays.ensure_overlay(target_gid);
+            overlay::update_overlay(ov, target_gid, &s.groups, &s.windows);
+        } else {
+            let target_managed = s.find_managed_window_at(screen_pt);
+
+            if let Some(target_win) = target_managed {
+                if target_win != peek_source {
+                    if let Some(target_gid) = s.groups.group_of(target_win) {
+                        // Target is in a group — add peek source to it
+                        s.groups.add_to_group(target_gid, peek_source);
+                        let ov = s.overlays.ensure_overlay(target_gid);
+                        overlay::update_overlay(ov, target_gid, &s.groups, &s.windows);
+                    } else {
+                        // Both ungrouped — create new group
+                        let new_gid = s.groups.create_group(target_win, peek_source);
+                        let ov = s.overlays.ensure_overlay(new_gid);
+                        overlay::update_overlay(ov, new_gid, &s.groups, &s.windows);
+                    }
+                }
+            }
+            // Drop on self or empty space — just hide peek (already done)
+        }
+    });
+}
+
 fn update_source_overlay(s: &mut crate::state::AppState, source_group: GroupId) {
     s.overlays.refresh_overlay(source_group, &s.groups, &s.windows);
+}
+
+fn update_drop_preview(screen_pt: POINT, peek_target: HWND, source_group: GroupId, source_tab: usize) {
+    let target = state::with_state(|s| {
+        // Resolve the dragged HWND to exclude it from targets
+        let dragged_hwnd = if !peek_target.is_null() {
+            peek_target
+        } else {
+            s.groups
+                .groups
+                .get(&source_group)
+                .and_then(|g| g.tabs.get(source_tab).copied())
+                .unwrap_or(std::ptr::null_mut())
+        };
+
+        let managed = s.find_managed_window_at(screen_pt);
+        match managed {
+            Some(hwnd) if hwnd != dragged_hwnd => Some(hwnd),
+            _ => None,
+        }
+    });
+
+    match target {
+        Some(target_hwnd) => show_preview(target_hwnd),
+        None => hide_preview(),
+    }
+}
+
+fn show_preview(target_hwnd: HWND) {
+    DROP_PREVIEW.with(|dp| {
+        let mut preview = dp.borrow_mut();
+        if let Some(ref p) = *preview {
+            if p.target_hwnd == target_hwnd {
+                // Already showing for this target — just reposition
+                overlay::show_drop_preview(p.overlay_hwnd, target_hwnd);
+                return;
+            }
+        }
+
+        let overlay_hwnd = match *preview {
+            Some(ref p) => p.overlay_hwnd,
+            None => {
+                let hwnd = overlay::create_drop_preview();
+                if hwnd.is_null() {
+                    return;
+                }
+                hwnd
+            }
+        };
+
+        overlay::show_drop_preview(overlay_hwnd, target_hwnd);
+        *preview = Some(DropPreview {
+            overlay_hwnd,
+            target_hwnd,
+        });
+    });
+}
+
+fn hide_preview() {
+    DROP_PREVIEW.with(|dp| {
+        if let Some(ref p) = *dp.borrow() {
+            overlay::hide_drop_preview(p.overlay_hwnd);
+        }
+    });
+}
+
+fn cleanup_drop_preview() {
+    DROP_PREVIEW.with(|dp| {
+        if let Some(p) = dp.borrow_mut().take() {
+            unsafe {
+                DestroyWindow(p.overlay_hwnd);
+            }
+        }
+    });
 }
 
 #[cfg(test)]
