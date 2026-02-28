@@ -11,7 +11,7 @@ use crate::state;
 use std::cell::RefCell;
 
 thread_local! {
-    static HOOKS: RefCell<Vec<HWINEVENTHOOK>> = RefCell::new(Vec::new());
+    static HOOKS: RefCell<Vec<HWINEVENTHOOK>> = const { RefCell::new(Vec::new()) };
 }
 
 pub fn install() {

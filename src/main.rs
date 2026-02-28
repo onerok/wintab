@@ -8,6 +8,9 @@ mod state;
 mod tray;
 mod window;
 
+#[cfg(test)]
+mod acceptance;
+
 use std::panic;
 
 use windows_sys::Win32::Foundation::*;
@@ -41,6 +44,7 @@ fn main() {
         });
 
         hook::install();
+        SetTimer(msg_hwnd, 1, 60, None);
         tray::add_tray_icon(msg_hwnd);
 
         // Message loop
@@ -51,6 +55,7 @@ fn main() {
         }
 
         // Cleanup
+        KillTimer(msg_hwnd, 1);
         hook::uninstall();
         tray::remove_tray_icon(msg_hwnd);
         state::with_state(|s| {
@@ -119,6 +124,10 @@ unsafe extern "system" fn msg_wnd_proc(
             } else {
                 DefWindowProcW(hwnd, msg, wparam, lparam)
             }
+        }
+        WM_TIMER => {
+            state::with_state(|s| s.on_peek_timer());
+            0
         }
         WM_DESTROY => {
             PostQuitMessage(0);
