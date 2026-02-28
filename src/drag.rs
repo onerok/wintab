@@ -11,6 +11,11 @@ use crate::state;
 
 const DRAG_THRESHOLD: i32 = 5;
 
+/// Check if movement exceeds drag threshold.
+fn exceeds_drag_threshold(dx: i32, dy: i32) -> bool {
+    dx.abs() > DRAG_THRESHOLD || dy.abs() > DRAG_THRESHOLD
+}
+
 struct DragState {
     source_overlay: HWND,
     source_group: GroupId,
@@ -56,9 +61,9 @@ pub fn on_mouse_move(overlay_hwnd: HWND, x: i32, y: i32) {
         }
 
         if !drag.dragging {
-            let dx = (pt.x - drag.start_x).abs();
-            let dy = (pt.y - drag.start_y).abs();
-            if dx > DRAG_THRESHOLD || dy > DRAG_THRESHOLD {
+            let dx = pt.x - drag.start_x;
+            let dy = pt.y - drag.start_y;
+            if exceeds_drag_threshold(dx, dy) {
                 drag.dragging = true;
                 unsafe {
                     SetCursor(LoadCursorW(0 as _, IDC_SIZEALL));
@@ -152,4 +157,38 @@ pub fn on_mouse_up(_overlay_hwnd: HWND, x: i32, y: i32) {
 
 fn update_source_overlay(s: &mut crate::state::AppState, source_group: GroupId) {
     s.overlays.refresh_overlay(source_group, &s.groups, &s.windows);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn threshold_not_exceeded_at_origin() {
+        assert!(!exceeds_drag_threshold(0, 0));
+    }
+
+    #[test]
+    fn threshold_not_exceeded_within_range() {
+        assert!(!exceeds_drag_threshold(3, 4));
+        assert!(!exceeds_drag_threshold(5, 5)); // exactly at threshold, not exceeded
+        assert!(!exceeds_drag_threshold(-5, -5));
+    }
+
+    #[test]
+    fn threshold_exceeded_x() {
+        assert!(exceeds_drag_threshold(6, 0));
+        assert!(exceeds_drag_threshold(-6, 0));
+    }
+
+    #[test]
+    fn threshold_exceeded_y() {
+        assert!(exceeds_drag_threshold(0, 6));
+        assert!(exceeds_drag_threshold(0, -6));
+    }
+
+    #[test]
+    fn threshold_exceeded_both() {
+        assert!(exceeds_drag_threshold(10, 10));
+    }
 }

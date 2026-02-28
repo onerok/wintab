@@ -263,3 +263,129 @@ impl GroupManager {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fake_hwnd(n: usize) -> HWND {
+        n as HWND
+    }
+
+    // --- TabGroup::active_hwnd ---
+
+    #[test]
+    fn active_hwnd_returns_first_tab() {
+        let group = TabGroup {
+            id: 1,
+            tabs: vec![fake_hwnd(100), fake_hwnd(200)],
+            active: 0,
+        };
+        assert_eq!(group.active_hwnd(), fake_hwnd(100));
+    }
+
+    #[test]
+    fn active_hwnd_returns_second_tab() {
+        let group = TabGroup {
+            id: 1,
+            tabs: vec![fake_hwnd(100), fake_hwnd(200)],
+            active: 1,
+        };
+        assert_eq!(group.active_hwnd(), fake_hwnd(200));
+    }
+
+    #[test]
+    #[should_panic(expected = "active_hwnd called on empty group")]
+    fn active_hwnd_empty_panics_in_debug() {
+        let group = TabGroup {
+            id: 1,
+            tabs: vec![],
+            active: 0,
+        };
+        let _ = group.active_hwnd();
+    }
+
+    #[test]
+    fn active_hwnd_out_of_bounds_returns_null() {
+        let group = TabGroup {
+            id: 1,
+            tabs: vec![fake_hwnd(100)],
+            active: 5,
+        };
+        assert!(group.active_hwnd().is_null());
+    }
+
+    // --- next_id ---
+
+    #[test]
+    fn next_id_increments() {
+        let a = next_id();
+        let b = next_id();
+        assert!(b > a);
+    }
+
+    // --- GroupManager ---
+
+    #[test]
+    fn group_of_returns_none_for_unknown() {
+        let gm = GroupManager::new();
+        assert_eq!(gm.group_of(fake_hwnd(999)), None);
+    }
+
+    #[test]
+    fn group_of_returns_id_when_present() {
+        let mut gm = GroupManager::new();
+        gm.window_to_group.insert(fake_hwnd(100), 42);
+        assert_eq!(gm.group_of(fake_hwnd(100)), Some(42));
+    }
+
+    #[test]
+    fn is_active_in_group_true_for_active_window() {
+        let mut gm = GroupManager::new();
+        let id = 10;
+        gm.groups.insert(id, TabGroup {
+            id,
+            tabs: vec![fake_hwnd(100), fake_hwnd(200)],
+            active: 0,
+        });
+        assert!(gm.is_active_in_group(id, fake_hwnd(100)));
+    }
+
+    #[test]
+    fn is_active_in_group_false_for_inactive_window() {
+        let mut gm = GroupManager::new();
+        let id = 10;
+        gm.groups.insert(id, TabGroup {
+            id,
+            tabs: vec![fake_hwnd(100), fake_hwnd(200)],
+            active: 0,
+        });
+        assert!(!gm.is_active_in_group(id, fake_hwnd(200)));
+    }
+
+    #[test]
+    fn is_active_in_group_false_for_unknown_group() {
+        let gm = GroupManager::new();
+        assert!(!gm.is_active_in_group(999, fake_hwnd(100)));
+    }
+
+    #[test]
+    fn is_active_in_group_false_for_empty_group() {
+        let mut gm = GroupManager::new();
+        let id = 10;
+        gm.groups.insert(id, TabGroup {
+            id,
+            tabs: vec![],
+            active: 0,
+        });
+        assert!(!gm.is_active_in_group(id, fake_hwnd(100)));
+    }
+
+    // --- GroupManager remove_from_group (data structure only) ---
+
+    #[test]
+    fn remove_from_group_unknown_window_is_noop() {
+        let mut gm = GroupManager::new();
+        gm.remove_from_group(fake_hwnd(999)); // should not panic
+    }
+}

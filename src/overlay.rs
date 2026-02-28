@@ -309,6 +309,33 @@ fn paint_tabs(
     }
 }
 
+/// Compute a premultiplied ARGB pixel from an RGB color and alpha value.
+fn premultiply_pixel(color: u32, alpha: u8) -> u32 {
+    let r = color & 0xFF;
+    let g = (color >> 8) & 0xFF;
+    let b = (color >> 16) & 0xFF;
+    let a = alpha as u32;
+
+    let pr = (r * a / 255) & 0xFF;
+    let pg = (g * a / 255) & 0xFF;
+    let pb = (b * a / 255) & 0xFF;
+    (a << 24) | (pr << 16) | (pg << 8) | pb
+}
+
+/// Calculate which tab index an x coordinate falls on, given total width and tab count.
+fn calculate_tab_index(x: i32, width: i32, tab_count: i32) -> Option<usize> {
+    if tab_count <= 0 || width <= 0 {
+        return None;
+    }
+    let tab_width = (width / tab_count).clamp(MIN_TAB_WIDTH, MAX_TAB_WIDTH);
+    let index = x / tab_width;
+    if index >= 0 && index < tab_count {
+        Some(index as usize)
+    } else {
+        None
+    }
+}
+
 /// Fill a rectangle in a 32-bit ARGB pixel buffer with premultiplied alpha.
 fn fill_rect_alpha(
     pixels: *mut u32,
@@ -321,15 +348,7 @@ fn fill_rect_alpha(
     color: u32,
     alpha: u8,
 ) {
-    let r = color & 0xFF;
-    let g = (color >> 8) & 0xFF;
-    let b = (color >> 16) & 0xFF;
-    let a = alpha as u32;
-
-    let pr = (r * a / 255) & 0xFF;
-    let pg = (g * a / 255) & 0xFF;
-    let pb = (b * a / 255) & 0xFF;
-    let pixel = (a << 24) | (pr << 16) | (pg << 8) | pb;
+    let pixel = premultiply_pixel(color, alpha);
 
     // Clamp ranges to buffer bounds
     let x0 = x.max(0);
@@ -363,13 +382,8 @@ pub fn hit_test_tab(overlay_hwnd: HWND, x: i32) -> Option<(GroupId, usize)> {
             let rect = group.active_rect();
             let width = rect.right - rect.left;
             let tab_count = group.tabs.len() as i32;
-            let tab_width = (width / tab_count).clamp(MIN_TAB_WIDTH, MAX_TAB_WIDTH);
-            let index = x / tab_width;
-            if index >= 0 && index < tab_count {
-                Some((group_id, index as usize))
-            } else {
-                None
-            }
+            let index = calculate_tab_index(x, width, tab_count)?;
+            Some((group_id, index))
         })
     }
 }
@@ -501,5 +515,180 @@ impl OverlayManager {
             .iter()
             .find(|(_, &v)| v == overlay_hwnd)
             .map(|(&k, _)| k)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fake_hwnd(n: usize) -> HWND {
+        n as HWND
+    }
+
+    // --- get_x_lparam / get_y_lparam ---
+
+    #[test]
+    fn get_x_lparam_extracts_low_word() {
+        // lparam packs x in low 16 bits, y in high 16 bits
+        let lparam: isize = 150 | (200 << 16);
+        assert_eq!(get_x_lparam(lparam), 150);
+    }
+
+    #[test]
+    fn get_y_lparam_extracts_high_word() {
+        let lparam: isize = 150 | (200 << 16);
+        assert_eq!(get_y_lparam(lparam), 200);
+    }
+
+    #[test]
+    fn get_x_lparam_handles_negative() {
+        // Negative coordinates (e.g. -10) are stored as signed i16 in low word
+        let x: i16 = -10;
+        let lparam: isize = (x as u16 as isize) | (50 << 16);
+        assert_eq!(get_x_lparam(lparam), -10);
+    }
+
+    #[test]
+    fn get_y_lparam_handles_negative() {
+        let y: i16 = -20;
+        let lparam: isize = 50 | ((y as u16 as isize) << 16);
+        assert_eq!(get_y_lparam(lparam), -20);
+    }
+
+    // --- premultiply_pixel ---
+
+    #[test]
+    fn premultiply_pixel_full_alpha() {
+        // color=0x00FF0000 (blue=FF in our BGR layout), alpha=255
+        // r = 0x00, g = 0x00, b = 0xFF
+        // pr=0, pg=0, pb=255
+        // result = (255 << 24) | (0 << 16) | (0 << 8) | 255
+        let pixel = premultiply_pixel(0x00FF0000, 255);
+        assert_eq!(pixel >> 24, 255); // alpha channel
+        assert_eq!(pixel & 0xFF, 255); // blue channel (pb)
+    }
+
+    #[test]
+    fn premultiply_pixel_zero_alpha() {
+        let pixel = premultiply_pixel(0x00FFFFFF, 0);
+        assert_eq!(pixel, 0); // All channels should be 0
+    }
+
+    #[test]
+    fn premultiply_pixel_half_alpha() {
+        // color = 0x000000FF (r=0xFF, g=0, b=0), alpha=128
+        // pr = (255 * 128 / 255) = 128
+        let pixel = premultiply_pixel(0x000000FF, 128);
+        let a = pixel >> 24;
+        let pr = (pixel >> 16) & 0xFF;
+        assert_eq!(a, 128);
+        assert_eq!(pr, 128);
+    }
+
+    // --- calculate_tab_index ---
+
+    #[test]
+    fn calculate_tab_index_first_tab() {
+        // 3 tabs in 600px width → 200px each (clamped to MAX_TAB_WIDTH=200)
+        assert_eq!(calculate_tab_index(10, 600, 3), Some(0));
+    }
+
+    #[test]
+    fn calculate_tab_index_second_tab() {
+        assert_eq!(calculate_tab_index(250, 600, 3), Some(1));
+    }
+
+    #[test]
+    fn calculate_tab_index_last_tab() {
+        assert_eq!(calculate_tab_index(450, 600, 3), Some(2));
+    }
+
+    #[test]
+    fn calculate_tab_index_out_of_range() {
+        // x beyond all tabs
+        assert_eq!(calculate_tab_index(700, 600, 3), None);
+    }
+
+    #[test]
+    fn calculate_tab_index_zero_tabs() {
+        assert_eq!(calculate_tab_index(10, 600, 0), None);
+    }
+
+    #[test]
+    fn calculate_tab_index_zero_width() {
+        assert_eq!(calculate_tab_index(10, 0, 3), None);
+    }
+
+    #[test]
+    fn calculate_tab_index_clamps_to_min_width() {
+        // 1 tab in 20px (below MIN_TAB_WIDTH=40) → tab_width clamped to 40
+        // x=10 / 40 = 0, which is < 1 → Some(0)
+        assert_eq!(calculate_tab_index(10, 20, 1), Some(0));
+    }
+
+    #[test]
+    fn calculate_tab_index_slightly_negative_x_maps_to_first() {
+        // -5 / 200 = 0 in integer division, so slightly negative x maps to tab 0
+        assert_eq!(calculate_tab_index(-5, 600, 3), Some(0));
+    }
+
+    #[test]
+    fn calculate_tab_index_very_negative_x() {
+        // -250 / 200 = -1, which is < 0 → None
+        assert_eq!(calculate_tab_index(-250, 600, 3), None);
+    }
+
+    // --- fill_rect_alpha ---
+
+    #[test]
+    fn fill_rect_alpha_writes_correct_region() {
+        let mut buf = vec![0u32; 10 * 5]; // 10 wide, 5 tall
+        fill_rect_alpha(buf.as_mut_ptr(), 10, 5, 2, 1, 3, 2, 0x000000FF, 255);
+
+        // Pixels inside the rect should be non-zero
+        assert_ne!(buf[1 * 10 + 2], 0); // (2,1)
+        assert_ne!(buf[1 * 10 + 3], 0); // (3,1)
+        assert_ne!(buf[1 * 10 + 4], 0); // (4,1)
+        assert_ne!(buf[2 * 10 + 2], 0); // (2,2)
+
+        // Pixels outside should remain zero
+        assert_eq!(buf[0 * 10 + 0], 0); // (0,0)
+        assert_eq!(buf[0 * 10 + 2], 0); // (2,0) - above rect
+        assert_eq!(buf[1 * 10 + 5], 0); // (5,1) - right of rect
+        assert_eq!(buf[3 * 10 + 2], 0); // (2,3) - below rect
+    }
+
+    #[test]
+    fn fill_rect_alpha_clamps_to_bounds() {
+        let mut buf = vec![0u32; 4 * 4]; // 4x4
+        // Rect extends beyond buffer: x=2, w=5 → clamps to x1=4
+        fill_rect_alpha(buf.as_mut_ptr(), 4, 4, 2, 0, 5, 2, 0x000000FF, 255);
+
+        assert_ne!(buf[0 * 4 + 2], 0); // (2,0) - inside
+        assert_ne!(buf[0 * 4 + 3], 0); // (3,0) - inside (edge)
+        assert_eq!(buf[0 * 4 + 0], 0); // (0,0) - outside
+    }
+
+    // --- OverlayManager ---
+
+    #[test]
+    fn group_for_overlay_finds_match() {
+        let mut om = OverlayManager::new();
+        om.overlays.insert(42, fake_hwnd(100));
+        assert_eq!(om.group_for_overlay(fake_hwnd(100)), Some(42));
+    }
+
+    #[test]
+    fn group_for_overlay_returns_none_when_empty() {
+        let om = OverlayManager::new();
+        assert_eq!(om.group_for_overlay(fake_hwnd(999)), None);
+    }
+
+    #[test]
+    fn group_for_overlay_returns_none_for_mismatch() {
+        let mut om = OverlayManager::new();
+        om.overlays.insert(42, fake_hwnd(100));
+        assert_eq!(om.group_for_overlay(fake_hwnd(200)), None);
     }
 }
