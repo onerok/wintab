@@ -40,6 +40,14 @@ fmt:
 fmt-check:
     cargo fmt -- --check
 
+# install release binary to ~/.cargo/bin
+install:
+    cargo install --path .
+
+# uninstall binary from ~/.cargo/bin
+uninstall:
+    cargo uninstall wintab
+
 # clean build artifacts
 clean:
     cargo clean
