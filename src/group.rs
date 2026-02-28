@@ -1,0 +1,257 @@
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use windows_sys::Win32::Foundation::{HWND, RECT};
+use windows_sys::Win32::UI::WindowsAndMessaging::*;
+
+use crate::window;
+
+pub type GroupId = u64;
+
+static NEXT_GROUP_ID: AtomicU64 = AtomicU64::new(1);
+
+pub fn next_id() -> GroupId {
+    NEXT_GROUP_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+/// A tab group: multiple windows sharing one screen position.
+#[allow(dead_code)]
+pub struct TabGroup {
+    pub id: GroupId,
+    pub tabs: Vec<HWND>,
+    pub active: usize,
+}
+
+impl TabGroup {
+    pub fn active_hwnd(&self) -> HWND {
+        self.tabs[self.active]
+    }
+
+    /// Switch to a different tab by index.
+    pub fn switch_to(&mut self, index: usize) {
+        if index >= self.tabs.len() || index == self.active {
+            return;
+        }
+
+        let old = self.tabs[self.active];
+        let new = self.tabs[index];
+        self.active = index;
+
+        unsafe {
+            let rect = window::get_window_rect(old);
+            ShowWindow(old, SW_HIDE);
+            SetWindowPos(
+                new,
+                0 as _,
+                rect.left,
+                rect.top,
+                rect.right - rect.left,
+                rect.bottom - rect.top,
+                SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW,
+            );
+            ShowWindow(new, SW_SHOW);
+            SetForegroundWindow(new);
+        }
+    }
+
+    /// Add a window to this group.
+    pub fn add(&mut self, hwnd: HWND) {
+        if self.tabs.contains(&hwnd) {
+            return;
+        }
+
+        let active = self.active_hwnd();
+        let rect = window::get_window_rect(active);
+
+        unsafe {
+            SetWindowPos(
+                hwnd,
+                0 as _,
+                rect.left,
+                rect.top,
+                rect.right - rect.left,
+                rect.bottom - rect.top,
+                SWP_NOACTIVATE | SWP_NOZORDER,
+            );
+            ShowWindow(hwnd, SW_HIDE);
+        }
+
+        self.tabs.push(hwnd);
+        self.switch_to(self.tabs.len() - 1);
+    }
+
+    /// Remove a window from this group, making it standalone again.
+    /// Returns true if the group should be dissolved (0 or 1 windows left).
+    pub fn remove(&mut self, hwnd: HWND) -> bool {
+        let Some(idx) = self.tabs.iter().position(|&h| h == hwnd) else {
+            return false;
+        };
+
+        self.tabs.remove(idx);
+
+        unsafe {
+            ShowWindow(hwnd, SW_SHOW);
+        }
+
+        if self.tabs.len() <= 1 {
+            if let Some(&remaining) = self.tabs.first() {
+                unsafe {
+                    ShowWindow(remaining, SW_SHOW);
+                }
+            }
+            return true;
+        }
+
+        if self.active >= self.tabs.len() {
+            self.active = self.tabs.len() - 1;
+        } else if idx < self.active {
+            self.active -= 1;
+        } else if idx == self.active {
+            let new_active = self.active.min(self.tabs.len() - 1);
+            self.active = new_active;
+            unsafe {
+                let h = self.tabs[self.active];
+                ShowWindow(h, SW_SHOW);
+                SetForegroundWindow(h);
+            }
+        }
+
+        false
+    }
+
+    /// Sync position of all hidden windows to match the active window.
+    pub fn sync_positions(&self) {
+        let active = self.active_hwnd();
+        let rect = window::get_window_rect(active);
+
+        unsafe {
+            for (i, &hwnd) in self.tabs.iter().enumerate() {
+                if i != self.active {
+                    SetWindowPos(
+                        hwnd,
+                        0 as _,
+                        rect.left,
+                        rect.top,
+                        rect.right - rect.left,
+                        rect.bottom - rect.top,
+                        SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOREDRAW,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Minimize all windows in the group.
+    pub fn minimize_all(&self) {
+        unsafe {
+            for &hwnd in &self.tabs {
+                ShowWindow(hwnd, SW_MINIMIZE);
+            }
+        }
+    }
+
+    /// Restore the group: show the active tab, keep others hidden.
+    pub fn restore(&mut self) {
+        unsafe {
+            let active = self.tabs[self.active];
+            ShowWindow(active, SW_RESTORE);
+            SetForegroundWindow(active);
+        }
+    }
+
+    /// Get the screen rect of the active window (for overlay positioning).
+    pub fn active_rect(&self) -> RECT {
+        window::get_window_rect(self.active_hwnd())
+    }
+}
+
+/// Manager that tracks all groups.
+pub struct GroupManager {
+    pub groups: HashMap<GroupId, TabGroup>,
+    pub window_to_group: HashMap<HWND, GroupId>,
+}
+
+impl GroupManager {
+    pub fn new() -> Self {
+        GroupManager {
+            groups: HashMap::new(),
+            window_to_group: HashMap::new(),
+        }
+    }
+
+    pub fn create_group(&mut self, hwnd_a: HWND, hwnd_b: HWND) -> GroupId {
+        self.remove_from_group(hwnd_a);
+        self.remove_from_group(hwnd_b);
+
+        let id = next_id();
+        let rect = window::get_window_rect(hwnd_a);
+
+        unsafe {
+            SetWindowPos(
+                hwnd_b,
+                0 as _,
+                rect.left,
+                rect.top,
+                rect.right - rect.left,
+                rect.bottom - rect.top,
+                SWP_NOACTIVATE | SWP_NOZORDER,
+            );
+            ShowWindow(hwnd_a, SW_HIDE);
+            ShowWindow(hwnd_b, SW_SHOW);
+            SetForegroundWindow(hwnd_b);
+        }
+
+        let group = TabGroup {
+            id,
+            tabs: vec![hwnd_a, hwnd_b],
+            active: 1,
+        };
+
+        self.window_to_group.insert(hwnd_a, id);
+        self.window_to_group.insert(hwnd_b, id);
+        self.groups.insert(id, group);
+        id
+    }
+
+    pub fn add_to_group(&mut self, group_id: GroupId, hwnd: HWND) {
+        self.remove_from_group(hwnd);
+        if let Some(group) = self.groups.get_mut(&group_id) {
+            group.add(hwnd);
+            self.window_to_group.insert(hwnd, group_id);
+        }
+    }
+
+    pub fn remove_from_group(&mut self, hwnd: HWND) {
+        if let Some(group_id) = self.window_to_group.remove(&hwnd) {
+            let dissolve = if let Some(group) = self.groups.get_mut(&group_id) {
+                group.remove(hwnd)
+            } else {
+                false
+            };
+
+            if dissolve {
+                if let Some(group) = self.groups.remove(&group_id) {
+                    for &h in &group.tabs {
+                        self.window_to_group.remove(&h);
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn group_of(&self, hwnd: HWND) -> Option<GroupId> {
+        self.window_to_group.get(&hwnd).copied()
+    }
+
+    pub fn show_all_windows(&self) {
+        unsafe {
+            for group in self.groups.values() {
+                for &hwnd in &group.tabs {
+                    if window::is_window_valid(hwnd) {
+                        ShowWindow(hwnd, SW_SHOW);
+                    }
+                }
+            }
+        }
+    }
+}

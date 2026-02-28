@@ -1,0 +1,128 @@
+#![windows_subsystem = "windows"]
+
+mod drag;
+mod group;
+mod hook;
+mod overlay;
+mod state;
+mod tray;
+mod window;
+
+use std::panic;
+
+use windows_sys::Win32::Foundation::*;
+use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::UI::WindowsAndMessaging::*;
+
+static MSG_WINDOW_CLASS: &[u16] = &[
+    b'W' as u16, b'i' as u16, b'n' as u16, b'T' as u16, b'a' as u16, b'b' as u16,
+    b'M' as u16, b's' as u16, b'g' as u16, 0,
+];
+
+fn main() {
+    // Safety net: show all hidden windows if we panic
+    let default_hook = panic::take_hook();
+    panic::set_hook(Box::new(move |info| {
+        state::with_state(|s| {
+            s.groups.show_all_windows();
+        });
+        default_hook(info);
+    }));
+
+    unsafe {
+        register_msg_window_class();
+        overlay::register_class();
+
+        let msg_hwnd = create_msg_window();
+
+        state::with_state(|s| {
+            s.init();
+        });
+
+        hook::install();
+        tray::add_tray_icon(msg_hwnd);
+
+        // Message loop
+        let mut msg: MSG = std::mem::zeroed();
+        while GetMessageW(&mut msg, 0 as _, 0, 0) > 0 {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+
+        // Cleanup
+        hook::uninstall();
+        tray::remove_tray_icon(msg_hwnd);
+        state::with_state(|s| {
+            s.shutdown();
+        });
+    }
+}
+
+fn register_msg_window_class() {
+    unsafe {
+        let instance = GetModuleHandleW(std::ptr::null());
+
+        let wc = WNDCLASSEXW {
+            cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+            style: 0,
+            lpfnWndProc: Some(msg_wnd_proc),
+            cbClsExtra: 0,
+            cbWndExtra: 0,
+            hInstance: instance,
+            hIcon: 0 as _,
+            hCursor: 0 as _,
+            hbrBackground: 0 as _,
+            lpszMenuName: std::ptr::null(),
+            lpszClassName: MSG_WINDOW_CLASS.as_ptr(),
+            hIconSm: 0 as _,
+        };
+        RegisterClassExW(&wc);
+    }
+}
+
+fn create_msg_window() -> HWND {
+    unsafe {
+        let instance = GetModuleHandleW(std::ptr::null());
+
+        CreateWindowExW(
+            0,
+            MSG_WINDOW_CLASS.as_ptr(),
+            std::ptr::null(),
+            0,
+            0,
+            0,
+            0,
+            0,
+            HWND_MESSAGE,
+            0 as _,
+            instance,
+            std::ptr::null(),
+        )
+    }
+}
+
+unsafe extern "system" fn msg_wnd_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: usize,
+    lparam: isize,
+) -> LRESULT {
+    match msg {
+        m if m == tray::WM_TRAY_ICON => {
+            tray::handle_tray_message(hwnd, lparam);
+            0
+        }
+        WM_COMMAND => {
+            if tray::handle_command(hwnd, wparam) {
+                0
+            } else {
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
+        }
+        WM_DESTROY => {
+            PostQuitMessage(0);
+            0
+        }
+        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+    }
+}
