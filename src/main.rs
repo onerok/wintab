@@ -23,7 +23,8 @@ fn main() {
     // Safety net: show all hidden windows if we panic
     let default_hook = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
-        state::with_state(|s| {
+        // Use try_with_state to avoid double-panic if RefCell is already borrowed
+        state::try_with_state(|s| {
             s.groups.show_all_windows();
         });
         default_hook(info);

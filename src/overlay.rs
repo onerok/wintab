@@ -9,11 +9,10 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
-use crate::group::GroupId;
+use crate::group::{GroupId, GroupManager};
 use crate::state;
-use crate::window;
+use crate::window::{self, WindowInfo};
 
-/// Height of the tab bar in pixels.
 pub const TAB_HEIGHT: i32 = 28;
 const TAB_PADDING: i32 = 6;
 const ICON_SIZE: i32 = 16;
@@ -31,18 +30,23 @@ static OVERLAY_CLASS_UTF16: &[u16] = &[
     b'y' as u16, 0,
 ];
 
-/// Per-overlay tracking data stored via SetWindowLongPtr.
 #[repr(C)]
 struct OverlayData {
     group_id: GroupId,
     hover_tab: i32,
 }
 
-/// Register the overlay window class. Call once at startup.
+fn get_x_lparam(lparam: isize) -> i32 {
+    (lparam & 0xFFFF) as i16 as i32
+}
+
+fn get_y_lparam(lparam: isize) -> i32 {
+    ((lparam >> 16) & 0xFFFF) as i16 as i32
+}
+
 pub fn register_class() {
     unsafe {
         let instance = GetModuleHandleW(std::ptr::null());
-
         let wc = WNDCLASSEXW {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
             style: CS_HREDRAW | CS_VREDRAW,
@@ -61,24 +65,16 @@ pub fn register_class() {
     }
 }
 
-/// Create an overlay window for a tab group.
 pub fn create_overlay(group_id: GroupId) -> HWND {
     unsafe {
         let instance = GetModuleHandleW(std::ptr::null());
-
         let hwnd = CreateWindowExW(
             WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
             OVERLAY_CLASS_UTF16.as_ptr(),
             std::ptr::null(),
             WS_POPUP,
-            0,
-            0,
-            100,
-            TAB_HEIGHT,
-            0 as _,
-            0 as _,
-            instance,
-            std::ptr::null(),
+            0, 0, 100, TAB_HEIGHT,
+            0 as _, 0 as _, instance, std::ptr::null(),
         );
 
         if !hwnd.is_null() {
@@ -88,12 +84,10 @@ pub fn create_overlay(group_id: GroupId) -> HWND {
             });
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(data) as isize);
         }
-
         hwnd
     }
 }
 
-/// Destroy an overlay window and free its data.
 pub fn destroy_overlay(hwnd: HWND) {
     unsafe {
         let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut OverlayData;
@@ -105,46 +99,60 @@ pub fn destroy_overlay(hwnd: HWND) {
     }
 }
 
-/// Reposition and repaint an overlay to match its group's active window.
-pub fn update_overlay(overlay_hwnd: HWND, group_id: GroupId) {
-    state::with_state(|s| {
-        let Some(group) = s.groups.groups.get(&group_id) else {
-            return;
-        };
-
-        if window::is_minimized(group.active_hwnd()) {
-            unsafe {
-                ShowWindow(overlay_hwnd, SW_HIDE);
-            }
-            return;
-        }
-
-        let rect = group.active_rect();
-        let width = rect.right - rect.left;
-
-        unsafe {
-            SetWindowPos(
-                overlay_hwnd,
-                HWND_TOPMOST,
-                rect.left,
-                rect.top - TAB_HEIGHT,
-                width,
-                TAB_HEIGHT,
-                SWP_NOACTIVATE | SWP_SHOWWINDOW,
-            );
-        }
-
-        paint_tabs(overlay_hwnd, group_id, s);
-    });
-}
-
-fn paint_tabs(overlay_hwnd: HWND, group_id: GroupId, s: &crate::state::AppState) {
-    let Some(group) = s.groups.groups.get(&group_id) else {
+/// Reposition and repaint an overlay. Takes disjoint fields to avoid borrow conflicts.
+pub fn update_overlay(
+    overlay_hwnd: HWND,
+    group_id: GroupId,
+    groups: &GroupManager,
+    windows: &HashMap<HWND, WindowInfo>,
+) {
+    let Some(group) = groups.groups.get(&group_id) else {
         return;
     };
 
+    if group.tabs.is_empty() {
+        return;
+    }
+
+    if window::is_minimized(group.active_hwnd()) {
+        unsafe {
+            ShowWindow(overlay_hwnd, SW_HIDE);
+        }
+        return;
+    }
+
+    let rect = group.active_rect();
+    let width = rect.right - rect.left;
+
     unsafe {
-        let rect = group.active_rect();
+        SetWindowPos(
+            overlay_hwnd,
+            HWND_TOPMOST,
+            rect.left,
+            rect.top - TAB_HEIGHT,
+            width,
+            TAB_HEIGHT,
+            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        );
+    }
+
+    paint_tabs(overlay_hwnd, group, &rect, windows);
+}
+
+/// Standalone version for calls from overlay wndproc (outside with_state).
+pub fn update_overlay_standalone(overlay_hwnd: HWND, group_id: GroupId) {
+    state::with_state(|s| {
+        update_overlay(overlay_hwnd, group_id, &s.groups, &s.windows);
+    });
+}
+
+fn paint_tabs(
+    overlay_hwnd: HWND,
+    group: &crate::group::TabGroup,
+    rect: &RECT,
+    windows: &HashMap<HWND, WindowInfo>,
+) {
+    unsafe {
         let width = (rect.right - rect.left).max(1);
         let height = TAB_HEIGHT;
 
@@ -155,7 +163,7 @@ fn paint_tabs(overlay_hwnd: HWND, group_id: GroupId, s: &crate::state::AppState)
             bmiHeader: BITMAPINFOHEADER {
                 biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
                 biWidth: width,
-                biHeight: -height, // top-down
+                biHeight: -height,
                 biPlanes: 1,
                 biBitCount: 32,
                 biCompression: BI_RGB as u32,
@@ -182,11 +190,9 @@ fn paint_tabs(overlay_hwnd: HWND, group_id: GroupId, s: &crate::state::AppState)
         }
         let old_bmp = SelectObject(hdc_mem, hbmp);
 
-        // Clear to fully transparent
         let pixel_count = (width * height) as usize;
         std::ptr::write_bytes(bits as *mut u32, 0, pixel_count);
 
-        // Get hover state
         let hover_tab = {
             let ptr = GetWindowLongPtrW(overlay_hwnd, GWLP_USERDATA) as *const OverlayData;
             if !ptr.is_null() {
@@ -196,7 +202,6 @@ fn paint_tabs(overlay_hwnd: HWND, group_id: GroupId, s: &crate::state::AppState)
             }
         };
 
-        // Calculate tab widths
         let tab_count = group.tabs.len() as i32;
         let tab_width = if tab_count > 0 {
             (width / tab_count).clamp(MIN_TAB_WIDTH, MAX_TAB_WIDTH)
@@ -204,7 +209,6 @@ fn paint_tabs(overlay_hwnd: HWND, group_id: GroupId, s: &crate::state::AppState)
             MIN_TAB_WIDTH
         };
 
-        // Create font
         let font_name: Vec<u16> = "Segoe UI\0".encode_utf16().collect();
         let font = CreateFontW(
             14, 0, 0, 0,
@@ -233,10 +237,10 @@ fn paint_tabs(overlay_hwnd: HWND, group_id: GroupId, s: &crate::state::AppState)
                 COLOR_INACTIVE
             };
 
-            // Fill tab background with alpha
             fill_rect_alpha(
                 bits as *mut u32,
                 width,
+                height,
                 x,
                 0,
                 tab_width,
@@ -245,8 +249,7 @@ fn paint_tabs(overlay_hwnd: HWND, group_id: GroupId, s: &crate::state::AppState)
                 if is_active { 220 } else { 160 },
             );
 
-            // Draw icon + title
-            let info = s.windows.get(&hwnd);
+            let info = windows.get(&hwnd);
             if let Some(info) = info {
                 if !info.icon.is_null() {
                     DrawIconEx(
@@ -272,19 +275,15 @@ fn paint_tabs(overlay_hwnd: HWND, group_id: GroupId, s: &crate::state::AppState)
                 DrawTextW(
                     hdc_mem,
                     text.as_ptr(),
-                    text.len() as i32 - 1, // exclude null
+                    text.len() as i32 - 1,
                     &mut text_rect,
                     DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX,
                 );
             }
         }
 
-        // Update the layered window
         let pt_src = POINT { x: 0, y: 0 };
-        let size = SIZE {
-            cx: width,
-            cy: height,
-        };
+        let size = SIZE { cx: width, cy: height };
         let pt_dst = POINT {
             x: rect.left,
             y: rect.top - TAB_HEIGHT,
@@ -297,18 +296,10 @@ fn paint_tabs(overlay_hwnd: HWND, group_id: GroupId, s: &crate::state::AppState)
         };
 
         UpdateLayeredWindow(
-            overlay_hwnd,
-            hdc_screen,
-            &pt_dst,
-            &size,
-            hdc_mem,
-            &pt_src,
-            0,
-            &blend,
-            ULW_ALPHA,
+            overlay_hwnd, hdc_screen, &pt_dst, &size,
+            hdc_mem, &pt_src, 0, &blend, ULW_ALPHA,
         );
 
-        // Cleanup
         SelectObject(hdc_mem, old_font);
         DeleteObject(font);
         SelectObject(hdc_mem, old_bmp);
@@ -322,6 +313,7 @@ fn paint_tabs(overlay_hwnd: HWND, group_id: GroupId, s: &crate::state::AppState)
 fn fill_rect_alpha(
     pixels: *mut u32,
     stride: i32,
+    buf_height: i32,
     x: i32,
     y: i32,
     w: i32,
@@ -329,7 +321,7 @@ fn fill_rect_alpha(
     color: u32,
     alpha: u8,
 ) {
-    let r = (color >> 0) & 0xFF;
+    let r = color & 0xFF;
     let g = (color >> 8) & 0xFF;
     let b = (color >> 16) & 0xFF;
     let a = alpha as u32;
@@ -339,18 +331,21 @@ fn fill_rect_alpha(
     let pb = (b * a / 255) & 0xFF;
     let pixel = (a << 24) | (pr << 16) | (pg << 8) | pb;
 
+    // Clamp ranges to buffer bounds
+    let x0 = x.max(0);
+    let y0 = y.max(0);
+    let x1 = (x + w).min(stride);
+    let y1 = (y + h).min(buf_height);
+
     unsafe {
-        for row in y..(y + h) {
-            for col in x..(x + w) {
-                if col >= 0 && col < stride && row >= 0 {
-                    *pixels.offset((row * stride + col) as isize) = pixel;
-                }
+        for row in y0..y1 {
+            for col in x0..x1 {
+                *pixels.offset((row * stride + col) as isize) = pixel;
             }
         }
     }
 }
 
-/// Determine which tab index a point (in overlay client coords) falls on.
 pub fn hit_test_tab(overlay_hwnd: HWND, x: i32) -> Option<(GroupId, usize)> {
     unsafe {
         let ptr = GetWindowLongPtrW(overlay_hwnd, GWLP_USERDATA) as *const OverlayData;
@@ -362,12 +357,12 @@ pub fn hit_test_tab(overlay_hwnd: HWND, x: i32) -> Option<(GroupId, usize)> {
 
         state::with_state(|s| {
             let group = s.groups.groups.get(&group_id)?;
+            if group.tabs.is_empty() {
+                return None;
+            }
             let rect = group.active_rect();
             let width = rect.right - rect.left;
             let tab_count = group.tabs.len() as i32;
-            if tab_count == 0 {
-                return None;
-            }
             let tab_width = (width / tab_count).clamp(MIN_TAB_WIDTH, MAX_TAB_WIDTH);
             let index = x / tab_width;
             if index >= 0 && index < tab_count {
@@ -388,7 +383,8 @@ fn set_hover_tab(overlay_hwnd: HWND, tab_index: i32) {
         let data = &mut *ptr;
         if data.hover_tab != tab_index {
             data.hover_tab = tab_index;
-            update_overlay(overlay_hwnd, data.group_id);
+            // Called from wndproc (outside with_state), safe to use standalone
+            update_overlay_standalone(overlay_hwnd, data.group_id);
         }
     }
 }
@@ -401,14 +397,14 @@ unsafe extern "system" fn overlay_wnd_proc(
 ) -> LRESULT {
     match msg {
         WM_LBUTTONDOWN => {
-            let x = (lparam & 0xFFFF) as i16 as i32;
+            let x = get_x_lparam(lparam);
             if let Some((group_id, tab_index)) = hit_test_tab(hwnd, x) {
-                crate::drag::on_mouse_down(hwnd, group_id, tab_index, x, ((lparam >> 16) & 0xFFFF) as i16 as i32);
+                crate::drag::on_mouse_down(hwnd, group_id, tab_index, x, get_y_lparam(lparam));
             }
             0
         }
         WM_MOUSEMOVE => {
-            let x = (lparam & 0xFFFF) as i16 as i32;
+            let x = get_x_lparam(lparam);
 
             if let Some((_gid, tab_index)) = hit_test_tab(hwnd, x) {
                 set_hover_tab(hwnd, tab_index as i32);
@@ -416,7 +412,7 @@ unsafe extern "system" fn overlay_wnd_proc(
                 set_hover_tab(hwnd, -1);
             }
 
-            crate::drag::on_mouse_move(hwnd, x, ((lparam >> 16) & 0xFFFF) as i16 as i32);
+            crate::drag::on_mouse_move(hwnd, x, get_y_lparam(lparam));
 
             let mut tme = TRACKMOUSEEVENT {
                 cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
@@ -425,7 +421,6 @@ unsafe extern "system" fn overlay_wnd_proc(
                 dwHoverTime: 0,
             };
             TrackMouseEvent(&mut tme);
-
             0
         }
         WM_MOUSELEAVE => {
@@ -433,14 +428,10 @@ unsafe extern "system" fn overlay_wnd_proc(
             0
         }
         WM_LBUTTONUP => {
-            let x = (lparam & 0xFFFF) as i16 as i32;
-            let y = ((lparam >> 16) & 0xFFFF) as i16 as i32;
-            crate::drag::on_mouse_up(hwnd, x, y);
+            crate::drag::on_mouse_up(hwnd, get_x_lparam(lparam), get_y_lparam(lparam));
             0
         }
-        WM_NCHITTEST => {
-            HTCLIENT as LRESULT
-        }
+        WM_NCHITTEST => HTCLIENT as LRESULT,
         WM_DESTROY => {
             let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut OverlayData;
             if !ptr.is_null() {
@@ -466,9 +457,7 @@ impl OverlayManager {
     }
 
     pub fn ensure_overlay(&mut self, group_id: GroupId) -> HWND {
-        *self.overlays.entry(group_id).or_insert_with(|| {
-            create_overlay(group_id)
-        })
+        *self.overlays.entry(group_id).or_insert_with(|| create_overlay(group_id))
     }
 
     pub fn remove_overlay(&mut self, group_id: GroupId) {
@@ -477,9 +466,27 @@ impl OverlayManager {
         }
     }
 
-    pub fn update_all(&self) {
+    /// Update or remove overlay for a group (handles dissolved groups).
+    pub fn refresh_overlay(
+        &mut self,
+        group_id: GroupId,
+        groups: &GroupManager,
+        windows: &HashMap<HWND, WindowInfo>,
+    ) {
+        if !groups.groups.contains_key(&group_id) {
+            self.remove_overlay(group_id);
+        } else if let Some(&ov) = self.overlays.get(&group_id) {
+            update_overlay(ov, group_id, groups, windows);
+        }
+    }
+
+    pub fn update_all(
+        &self,
+        groups: &GroupManager,
+        windows: &HashMap<HWND, WindowInfo>,
+    ) {
         for (&gid, &overlay) in &self.overlays {
-            update_overlay(overlay, gid);
+            update_overlay(overlay, gid, groups, windows);
         }
     }
 

@@ -8,7 +8,6 @@ use crate::group::GroupManager;
 use crate::overlay::{self, OverlayManager};
 use crate::window::{self, WindowInfo};
 
-/// Central application state — single-threaded, accessed via thread-local.
 pub struct AppState {
     pub windows: HashMap<HWND, WindowInfo>,
     pub groups: GroupManager,
@@ -37,6 +36,18 @@ where
     })
 }
 
+/// Try to access state without panicking (for panic hook).
+pub fn try_with_state<F>(f: F)
+where
+    F: FnOnce(&mut AppState),
+{
+    STATE.with(|cell| {
+        if let Ok(mut state) = cell.try_borrow_mut() {
+            f(&mut state);
+        }
+    });
+}
+
 impl AppState {
     pub fn init(&mut self) {
         let windows = window::enumerate_windows();
@@ -61,25 +72,26 @@ impl AppState {
         self.windows.remove(&hwnd);
 
         if let Some(gid) = self.groups.group_of(hwnd) {
-            let old_gid = gid;
             self.groups.remove_from_group(hwnd);
-
-            if !self.groups.groups.contains_key(&old_gid) {
-                self.overlays.remove_overlay(old_gid);
-            } else if let Some(&ov) = self.overlays.overlays.get(&old_gid) {
-                overlay::update_overlay(ov, old_gid);
-            }
+            self.overlays.refresh_overlay(gid, &self.groups, &self.windows);
         }
     }
 
     pub fn on_title_changed(&mut self, hwnd: HWND) {
+        let old_title = self.windows.get(&hwnd).map(|i| i.title.clone());
         if let Some(info) = self.windows.get_mut(&hwnd) {
             info.refresh_title();
         }
 
+        // Only repaint if title actually changed
+        let new_title = self.windows.get(&hwnd).map(|i| &i.title);
+        if old_title.as_deref() == new_title.map(|s| s.as_str()) {
+            return;
+        }
+
         if let Some(gid) = self.groups.group_of(hwnd) {
             if let Some(&ov) = self.overlays.overlays.get(&gid) {
-                overlay::update_overlay(ov, gid);
+                overlay::update_overlay(ov, gid, &self.groups, &self.windows);
             }
         }
     }
@@ -94,12 +106,7 @@ impl AppState {
         }
 
         if let Some(gid) = self.groups.group_of(hwnd) {
-            let is_active = self
-                .groups
-                .groups
-                .get(&gid)
-                .map(|g| g.active_hwnd() == hwnd)
-                .unwrap_or(false);
+            let is_active = self.groups.is_active_in_group(gid, hwnd);
 
             if is_active {
                 self.suppress_events = true;
@@ -109,7 +116,7 @@ impl AppState {
                 self.suppress_events = false;
 
                 if let Some(&ov) = self.overlays.overlays.get(&gid) {
-                    overlay::update_overlay(ov, gid);
+                    overlay::update_overlay(ov, gid, &self.groups, &self.windows);
                 }
             }
         }
@@ -120,15 +127,11 @@ impl AppState {
             return;
         }
 
-        // If a hidden window in a group gets focus (e.g., taskbar click), switch to it
         if let Some(gid) = self.groups.group_of(hwnd) {
             if let Some(group) = self.groups.groups.get_mut(&gid) {
                 if let Some(idx) = group.tabs.iter().position(|&h| h == hwnd) {
                     if idx != group.active {
                         group.switch_to(idx);
-                        if let Some(&ov) = self.overlays.overlays.get(&gid) {
-                            overlay::update_overlay(ov, gid);
-                        }
                     }
                 }
             }
@@ -139,29 +142,19 @@ impl AppState {
                     SetWindowPos(
                         ov,
                         HWND_TOPMOST,
-                        0,
-                        0,
-                        0,
-                        0,
+                        0, 0, 0, 0,
                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
                     );
                 }
             }
         }
 
-        self.overlays.update_all();
+        self.overlays.update_all(&self.groups, &self.windows);
     }
 
     pub fn on_minimize(&mut self, hwnd: HWND) {
         if let Some(gid) = self.groups.group_of(hwnd) {
-            let is_active = self
-                .groups
-                .groups
-                .get(&gid)
-                .map(|g| g.active_hwnd() == hwnd)
-                .unwrap_or(false);
-
-            if is_active {
+            if self.groups.is_active_in_group(gid, hwnd) {
                 self.suppress_events = true;
                 if let Some(group) = self.groups.groups.get(&gid) {
                     group.minimize_all();
@@ -181,9 +174,9 @@ impl AppState {
         if let Some(gid) = self.groups.group_of(hwnd) {
             if let Some(group) = self.groups.groups.get_mut(&gid) {
                 group.restore();
-                if let Some(&ov) = self.overlays.overlays.get(&gid) {
-                    overlay::update_overlay(ov, gid);
-                }
+            }
+            if let Some(&ov) = self.overlays.overlays.get(&gid) {
+                overlay::update_overlay(ov, gid, &self.groups, &self.windows);
             }
         }
     }
@@ -197,7 +190,7 @@ impl AppState {
                 }
             }
         } else {
-            self.overlays.update_all();
+            self.overlays.update_all(&self.groups, &self.windows);
         }
     }
 

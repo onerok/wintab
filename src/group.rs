@@ -24,7 +24,8 @@ pub struct TabGroup {
 
 impl TabGroup {
     pub fn active_hwnd(&self) -> HWND {
-        self.tabs[self.active]
+        debug_assert!(!self.tabs.is_empty(), "active_hwnd called on empty group");
+        self.tabs.get(self.active).copied().unwrap_or(std::ptr::null_mut())
     }
 
     /// Switch to a different tab by index.
@@ -241,6 +242,13 @@ impl GroupManager {
 
     pub fn group_of(&self, hwnd: HWND) -> Option<GroupId> {
         self.window_to_group.get(&hwnd).copied()
+    }
+
+    pub fn is_active_in_group(&self, gid: GroupId, hwnd: HWND) -> bool {
+        self.groups
+            .get(&gid)
+            .map(|g| !g.tabs.is_empty() && g.active_hwnd() == hwnd)
+            .unwrap_or(false)
     }
 
     pub fn show_all_windows(&self) {

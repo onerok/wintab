@@ -85,7 +85,7 @@ pub fn on_mouse_up(_overlay_hwnd: HWND, x: i32, y: i32) {
                 group.switch_to(drag.source_tab);
             }
             if let Some(&ov) = s.overlays.overlays.get(&drag.source_group) {
-                overlay::update_overlay(ov, drag.source_group);
+                overlay::update_overlay(ov, drag.source_group, &s.groups, &s.windows);
             }
         });
         return;
@@ -118,7 +118,7 @@ pub fn on_mouse_up(_overlay_hwnd: HWND, x: i32, y: i32) {
 
                 update_source_overlay(s, drag.source_group);
                 let ov = s.overlays.ensure_overlay(target_gid);
-                overlay::update_overlay(ov, target_gid);
+                overlay::update_overlay(ov, target_gid, &s.groups, &s.windows);
             }
         } else {
             let target_managed = s.find_managed_window_at(screen_pt);
@@ -130,13 +130,13 @@ pub fn on_mouse_up(_overlay_hwnd: HWND, x: i32, y: i32) {
                         s.groups.add_to_group(target_gid, dragged_hwnd);
                         update_source_overlay(s, drag.source_group);
                         let ov = s.overlays.ensure_overlay(target_gid);
-                        overlay::update_overlay(ov, target_gid);
+                        overlay::update_overlay(ov, target_gid, &s.groups, &s.windows);
                     } else {
                         s.groups.remove_from_group(dragged_hwnd);
                         let new_gid = s.groups.create_group(target_win, dragged_hwnd);
                         update_source_overlay(s, drag.source_group);
                         let ov = s.overlays.ensure_overlay(new_gid);
-                        overlay::update_overlay(ov, new_gid);
+                        overlay::update_overlay(ov, new_gid, &s.groups, &s.windows);
                     }
                 }
             } else {
@@ -151,9 +151,5 @@ pub fn on_mouse_up(_overlay_hwnd: HWND, x: i32, y: i32) {
 }
 
 fn update_source_overlay(s: &mut crate::state::AppState, source_group: GroupId) {
-    if !s.groups.groups.contains_key(&source_group) {
-        s.overlays.remove_overlay(source_group);
-    } else if let Some(&ov) = s.overlays.overlays.get(&source_group) {
-        overlay::update_overlay(ov, source_group);
-    }
+    s.overlays.refresh_overlay(source_group, &s.groups, &s.windows);
 }
