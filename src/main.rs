@@ -1,9 +1,12 @@
 #![windows_subsystem = "windows"]
 
+mod appdata;
+mod config;
 mod drag;
 mod group;
 mod hook;
 mod overlay;
+mod position_store;
 mod state;
 mod tray;
 mod vdesktop;

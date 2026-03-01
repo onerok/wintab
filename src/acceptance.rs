@@ -3,6 +3,7 @@
 //! Creates real windows, groups them, verifies overlays, switches tabs,
 //! and ungroups — exercising the full happy path.
 
+use std::process::{Command, Stdio};
 use std::ptr;
 use std::thread;
 use std::time::Duration;
@@ -84,6 +85,8 @@ fn make_window_info(hwnd: HWND) -> WindowInfo {
     WindowInfo {
         hwnd,
         title: window::get_window_title(hwnd),
+        process_name: String::new(),
+        class_name: String::new(),
         icon: window::get_window_icon(hwnd),
         rect: window::get_window_rect(hwnd),
     }
@@ -1676,4 +1679,588 @@ fn acceptance_tooltip_shows_truncated_title() {
         DestroyWindow(win1);
         DestroyWindow(win2);
     }
+}
+
+// ── Rules engine acceptance tests ──
+
+/// Build a WindowInfo with explicit process_name and class_name.
+fn make_window_info_with_meta(hwnd: HWND, process_name: &str, class_name: &str) -> WindowInfo {
+    WindowInfo {
+        hwnd,
+        title: window::get_window_title(hwnd),
+        process_name: process_name.to_string(),
+        class_name: class_name.to_string(),
+        icon: window::get_window_icon(hwnd),
+        rect: window::get_window_rect(hwnd),
+    }
+}
+
+#[test]
+fn acceptance_rules_auto_group_two_matching_windows() {
+    // Verify: two windows matching the same rule get auto-grouped
+    // with overlay, and a singleton doesn't get an overlay.
+    overlay::register_class();
+    let test_class = register_test_class();
+
+    let win1 = create_test_window(&test_class, "Rules Test A");
+    let win2 = create_test_window(&test_class, "Rules Test B");
+    let win_solo = create_test_window(&test_class, "Solo Window");
+    assert!(!win1.is_null());
+    assert!(!win2.is_null());
+    assert!(!win_solo.is_null());
+
+    pump_messages(Duration::from_millis(200));
+
+    state::with_state(|s| {
+        // Inject rules: match process "test_app.exe"
+        use crate::config::*;
+        s.rules = RulesEngine {
+            groups: vec![RuleGroup {
+                name: "TestApps".into(),
+                enabled: true,
+                match_mode: MatchMode::All,
+                rules: vec![WindowRule {
+                    field: RuleField::ProcessName,
+                    matcher: Matcher::Equals("test_app.exe".into(), false),
+                }],
+            }],
+        };
+
+        // Insert windows — win1 and win2 match, win_solo doesn't
+        s.windows.insert(win1, make_window_info_with_meta(win1, "test_app.exe", "TestClass"));
+        s.windows.insert(win2, make_window_info_with_meta(win2, "test_app.exe", "TestClass"));
+        s.windows.insert(win_solo, make_window_info_with_meta(win_solo, "other.exe", "OtherClass"));
+
+        // Apply rules: win1 becomes pending singleton (no group yet)
+        s.apply_rules(win1);
+        assert!(
+            s.groups.pending_rules.contains_key("TestApps"),
+            "First matching window should be a pending singleton"
+        );
+        assert!(
+            s.groups.group_of(win1).is_none(),
+            "Singleton should NOT be in a TabGroup"
+        );
+        assert!(
+            s.overlays.overlays.is_empty(),
+            "No overlay for singletons"
+        );
+
+        // Apply rules: win2 triggers group creation
+        s.apply_rules(win2);
+        assert!(
+            !s.groups.pending_rules.contains_key("TestApps"),
+            "Pending entry should be consumed"
+        );
+        let gid_1 = s.groups.group_of(win1);
+        let gid_2 = s.groups.group_of(win2);
+        assert!(gid_1.is_some(), "win1 should now be in a group");
+        assert_eq!(gid_1, gid_2, "Both windows should be in the SAME group");
+
+        let gid = gid_1.unwrap();
+        assert!(
+            s.groups.named_groups.get("TestApps") == Some(&gid),
+            "named_groups should map rule name to GroupId"
+        );
+        assert!(
+            s.overlays.overlays.contains_key(&gid),
+            "Overlay should be created for the group"
+        );
+
+        // Apply rules to solo window — no match, no grouping
+        s.apply_rules(win_solo);
+        assert!(
+            s.groups.group_of(win_solo).is_none(),
+            "Non-matching window should NOT be grouped"
+        );
+
+        // Verify the group has exactly 2 tabs
+        let group = s.groups.groups.get(&gid).unwrap();
+        assert_eq!(group.tabs.len(), 2, "Group should have exactly 2 tabs");
+
+        // Cleanup
+        s.overlays.remove_overlay(gid);
+        s.groups.remove_from_group(win1);
+        s.groups.remove_from_group(win2);
+        s.windows.clear();
+        s.rules = RulesEngine { groups: Vec::new() };
+    });
+
+    unsafe {
+        DestroyWindow(win1);
+        DestroyWindow(win2);
+        DestroyWindow(win_solo);
+    }
+}
+
+#[test]
+fn acceptance_rules_third_window_joins_existing_group() {
+    // Verify: a third matching window joins the existing named group.
+    overlay::register_class();
+    let test_class = register_test_class();
+
+    let win1 = create_test_window(&test_class, "Join A");
+    let win2 = create_test_window(&test_class, "Join B");
+    let win3 = create_test_window(&test_class, "Join C");
+    assert!(!win1.is_null());
+    assert!(!win2.is_null());
+    assert!(!win3.is_null());
+
+    pump_messages(Duration::from_millis(200));
+
+    state::with_state(|s| {
+        use crate::config::*;
+        s.rules = RulesEngine {
+            groups: vec![RuleGroup {
+                name: "Editors".into(),
+                enabled: true,
+                match_mode: MatchMode::All,
+                rules: vec![WindowRule {
+                    field: RuleField::ProcessName,
+                    matcher: Matcher::Equals("editor.exe".into(), false),
+                }],
+            }],
+        };
+
+        s.windows.insert(win1, make_window_info_with_meta(win1, "editor.exe", "EditorClass"));
+        s.windows.insert(win2, make_window_info_with_meta(win2, "editor.exe", "EditorClass"));
+        s.windows.insert(win3, make_window_info_with_meta(win3, "editor.exe", "EditorClass"));
+
+        s.apply_rules(win1); // pending
+        s.apply_rules(win2); // creates group
+
+        let gid = s.groups.group_of(win1).unwrap();
+        assert_eq!(s.groups.groups.get(&gid).unwrap().tabs.len(), 2);
+
+        // Third window should join existing named group
+        s.apply_rules(win3);
+        assert_eq!(
+            s.groups.group_of(win3),
+            Some(gid),
+            "Third window should join the existing named group"
+        );
+        assert_eq!(
+            s.groups.groups.get(&gid).unwrap().tabs.len(),
+            3,
+            "Group should now have 3 tabs"
+        );
+
+        // Cleanup
+        s.overlays.remove_overlay(gid);
+        s.groups.remove_from_group(win1);
+        s.groups.remove_from_group(win2);
+        s.groups.remove_from_group(win3);
+        s.windows.clear();
+        s.rules = RulesEngine { groups: Vec::new() };
+    });
+
+    unsafe {
+        DestroyWindow(win1);
+        DestroyWindow(win2);
+        DestroyWindow(win3);
+    }
+}
+
+#[test]
+fn acceptance_rules_disabled_rule_skipped() {
+    // Verify: disabled rules don't match.
+    overlay::register_class();
+    let test_class = register_test_class();
+
+    let win1 = create_test_window(&test_class, "Disabled A");
+    let win2 = create_test_window(&test_class, "Disabled B");
+    assert!(!win1.is_null());
+    assert!(!win2.is_null());
+
+    pump_messages(Duration::from_millis(200));
+
+    state::with_state(|s| {
+        use crate::config::*;
+        s.rules = RulesEngine {
+            groups: vec![RuleGroup {
+                name: "Disabled".into(),
+                enabled: false,
+                match_mode: MatchMode::All,
+                rules: vec![WindowRule {
+                    field: RuleField::ProcessName,
+                    matcher: Matcher::Equals("app.exe".into(), false),
+                }],
+            }],
+        };
+
+        s.windows.insert(win1, make_window_info_with_meta(win1, "app.exe", "C"));
+        s.windows.insert(win2, make_window_info_with_meta(win2, "app.exe", "C"));
+
+        s.apply_rules(win1);
+        s.apply_rules(win2);
+
+        assert!(s.groups.group_of(win1).is_none(), "Disabled rule should not match");
+        assert!(s.groups.group_of(win2).is_none(), "Disabled rule should not match");
+        assert!(s.groups.pending_rules.is_empty(), "No pending entries for disabled rules");
+
+        // Cleanup
+        s.windows.clear();
+        s.rules = RulesEngine { groups: Vec::new() };
+    });
+
+    unsafe {
+        DestroyWindow(win1);
+        DestroyWindow(win2);
+    }
+}
+
+#[test]
+fn acceptance_pending_singleton_cleaned_on_destroy() {
+    // Verify: destroying a pending singleton removes it from pending_rules.
+    overlay::register_class();
+    let test_class = register_test_class();
+
+    let win1 = create_test_window(&test_class, "Pending Destroy");
+    assert!(!win1.is_null());
+
+    pump_messages(Duration::from_millis(200));
+
+    state::with_state(|s| {
+        use crate::config::*;
+        s.rules = RulesEngine {
+            groups: vec![RuleGroup {
+                name: "PendingTest".into(),
+                enabled: true,
+                match_mode: MatchMode::All,
+                rules: vec![WindowRule {
+                    field: RuleField::ProcessName,
+                    matcher: Matcher::Equals("pending.exe".into(), false),
+                }],
+            }],
+        };
+
+        s.windows.insert(win1, make_window_info_with_meta(win1, "pending.exe", "C"));
+        s.apply_rules(win1);
+
+        assert!(s.groups.pending_rules.contains_key("PendingTest"));
+
+        // Simulate window destruction
+        s.on_window_destroyed(win1);
+        assert!(
+            !s.groups.pending_rules.contains_key("PendingTest"),
+            "Pending entry should be removed when window is destroyed"
+        );
+
+        // Cleanup
+        s.rules = RulesEngine { groups: Vec::new() };
+    });
+
+    unsafe {
+        DestroyWindow(win1);
+    }
+}
+
+// ── Position store acceptance tests ──
+
+#[test]
+fn acceptance_position_restore_moves_window() {
+    // Verify: a window with a recorded position gets moved on creation.
+    overlay::register_class();
+    let test_class = register_test_class();
+
+    let win1 = create_test_window(&test_class, "Position Test");
+    assert!(!win1.is_null());
+
+    pump_messages(Duration::from_millis(200));
+
+    // Record a specific position in the store
+    let target_rect = crate::position_store::RectDef {
+        left: 150,
+        top: 100,
+        right: 950,
+        bottom: 700,
+    };
+
+    state::with_state(|s| {
+        s.position_store.record(
+            "pos_test.exe",
+            "PosClass",
+            "Position Test",
+            target_rect.clone(),
+            96,
+        );
+    });
+
+    // Build WindowInfo with matching metadata and call try_restore_position
+    let info = WindowInfo {
+        hwnd: win1,
+        title: "Position Test".to_string(),
+        process_name: "pos_test.exe".to_string(),
+        class_name: "PosClass".to_string(),
+        icon: window::get_window_icon(win1),
+        rect: window::get_window_rect(win1),
+    };
+
+    state::with_state(|s| {
+        s.try_restore_position(win1, &info);
+    });
+
+    pump_messages(Duration::from_millis(100));
+
+    // Verify the window was moved. The position store stores rect at DPI 96.
+    // try_restore_position scales by (current_dpi / 96). We verify the actual
+    // position is close to the scaled values (DWM extended frame bounds may
+    // add invisible border offsets).
+    let actual_rect = window::get_window_rect(win1);
+    let current_dpi = window::get_window_dpi(win1);
+    let scale = current_dpi as f64 / 96.0;
+    let expected_left = (target_rect.left as f64 * scale) as i32;
+    let expected_top = (target_rect.top as f64 * scale) as i32;
+    let tolerance = 30; // DWM invisible border offset
+    assert!(
+        (actual_rect.left - expected_left).abs() < tolerance
+            && (actual_rect.top - expected_top).abs() < tolerance,
+        "Window should be near target position (DPI-scaled).\n  \
+         DPI={} scale={:.2}\n  \
+         Expected top-left: ({},{})\n  \
+         Actual top-left:   ({},{})",
+        current_dpi, scale,
+        expected_left, expected_top,
+        actual_rect.left, actual_rect.top,
+    );
+
+    // Cleanup
+    state::with_state(|s| {
+        s.windows.remove(&win1);
+        s.position_store = crate::position_store::PositionStore::empty();
+    });
+
+    unsafe {
+        DestroyWindow(win1);
+    }
+}
+
+#[test]
+fn acceptance_position_recorded_on_move() {
+    // Verify: moving a window records its position in the store.
+    overlay::register_class();
+    let test_class = register_test_class();
+
+    let win1 = create_test_window(&test_class, "Move Record Test");
+    assert!(!win1.is_null());
+
+    pump_messages(Duration::from_millis(200));
+
+    state::with_state(|s| {
+        s.windows.insert(win1, make_window_info_with_meta(win1, "move_test.exe", "MoveClass"));
+    });
+
+    // Move the window
+    unsafe {
+        SetWindowPos(win1, 0 as _, 200, 150, 600, 400, SWP_NOACTIVATE | SWP_NOZORDER);
+    }
+    pump_messages(Duration::from_millis(100));
+
+    // Trigger on_window_moved
+    state::with_state(|s| {
+        s.on_window_moved(win1);
+    });
+
+    // Verify position was recorded
+    let found = state::with_state(|s| {
+        s.position_store
+            .lookup("move_test.exe", "MoveClass", "Move Record Test")
+            .is_some()
+    });
+    assert!(found, "Position should be recorded after window move");
+
+    // Cleanup
+    state::with_state(|s| {
+        s.windows.remove(&win1);
+        s.position_store = crate::position_store::PositionStore::empty();
+    });
+
+    unsafe {
+        DestroyWindow(win1);
+    }
+}
+
+// ── E2E test: real separate process ──
+
+/// E2E test: spawns a real separate process (dummy_window.exe) whose windows
+/// pass `is_eligible()` (different PID), then verifies WinTab discovers,
+/// auto-groups, and tab-switches them — with screenshot evidence.
+#[test]
+fn acceptance_rules_e2e_auto_group() {
+    // Phase 0: Spawn dummy process
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let dummy_path = std::path::Path::new(manifest_dir)
+        .join("target")
+        .join("debug")
+        .join("dummy_window.exe");
+    assert!(
+        dummy_path.exists(),
+        "dummy_window.exe not found at {:?}. Run `cargo build --bin dummy_window` first.",
+        dummy_path
+    );
+
+    let mut child = Command::new(&dummy_path)
+        .args(["2", "DummyApp"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .expect("Failed to spawn dummy_window.exe");
+
+    let child_pid = child.id();
+
+    // Phase 1: Wait for windows to appear, then discover via enumerate_windows
+    overlay::register_class();
+
+    // Poll for the dummy windows to appear (up to 5 seconds)
+    let mut discovered: Vec<WindowInfo> = Vec::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        pump_messages(Duration::from_millis(200));
+        discovered = window::enumerate_windows()
+            .into_iter()
+            .filter(|info| {
+                let mut pid = 0u32;
+                unsafe {
+                    GetWindowThreadProcessId(info.hwnd, &mut pid);
+                }
+                pid == child_pid
+            })
+            .collect();
+        if discovered.len() >= 2 {
+            break;
+        }
+    }
+
+    assert_eq!(
+        discovered.len(),
+        2,
+        "Expected 2 windows discovered from dummy process (PID {}), got {}. \
+         This means is_eligible() filtered them out.",
+        child_pid,
+        discovered.len()
+    );
+
+    for info in &discovered {
+        assert_eq!(
+            info.process_name, "dummy_window.exe",
+            "process_name should be dummy_window.exe, got '{}'",
+            info.process_name
+        );
+    }
+
+    // Screenshot 01: two windows discovered, no overlay yet
+    let first_hwnd = discovered[0].hwnd;
+    screenshot::capture_window(first_hwnd, "evidence/rules_auto_group/01_windows_discovered.png");
+
+    // Phase 2: Apply rules
+    state::with_state(|s| {
+        use crate::config::*;
+        s.rules = RulesEngine {
+            groups: vec![RuleGroup {
+                name: "DummyApps".into(),
+                enabled: true,
+                match_mode: MatchMode::All,
+                rules: vec![WindowRule {
+                    field: RuleField::ProcessName,
+                    matcher: Matcher::Equals("dummy_window.exe".into(), false),
+                }],
+            }],
+        };
+
+        for info in &discovered {
+            s.windows.insert(info.hwnd, info.clone());
+        }
+
+        for info in &discovered {
+            s.apply_rules(info.hwnd);
+        }
+    });
+
+    pump_messages(Duration::from_millis(300));
+
+    // Phase 3: Verify grouping
+    let group_id = state::with_state(|s| {
+        let gid_0 = s.groups.group_of(discovered[0].hwnd);
+        let gid_1 = s.groups.group_of(discovered[1].hwnd);
+        assert!(gid_0.is_some(), "First window should be in a group");
+        assert_eq!(
+            gid_0, gid_1,
+            "Both windows should be in the same group"
+        );
+
+        let gid = gid_0.unwrap();
+        let group = s.groups.groups.get(&gid).expect("Group should exist");
+        assert_eq!(group.tabs.len(), 2, "Group should have 2 tabs");
+
+        assert!(
+            s.overlays.overlays.contains_key(&gid),
+            "Overlay should exist for the group"
+        );
+
+        gid
+    });
+
+    let ov_hwnd = state::with_state(|s| {
+        *s.overlays.overlays.get(&group_id).unwrap()
+    });
+    unsafe {
+        assert_ne!(
+            IsWindowVisible(ov_hwnd),
+            0,
+            "Overlay should be visible after auto-grouping"
+        );
+    }
+
+    // Screenshot 02: overlay tab bar visible after auto-grouping
+    let active_hwnd = state::with_state(|s| {
+        s.groups.groups.get(&group_id).unwrap().active_hwnd()
+    });
+    screenshot::capture_window(
+        active_hwnd,
+        "evidence/rules_auto_group/02_auto_grouped.png",
+    );
+
+    // Phase 4: Tab switch
+    state::with_state(|s| {
+        let group = s.groups.groups.get_mut(&group_id).unwrap();
+        group.switch_to(0);
+    });
+
+    pump_messages(Duration::from_millis(200));
+
+    let switched_hwnd = state::with_state(|s| {
+        let group = s.groups.groups.get(&group_id).unwrap();
+        assert_eq!(group.active, 0, "Active tab should be 0 after switch");
+        group.active_hwnd()
+    });
+
+    // Update overlay after switch
+    state::with_state(|s| {
+        let ov = *s.overlays.overlays.get(&group_id).unwrap();
+        overlay::update_overlay(ov, group_id, &s.groups, &s.windows);
+    });
+
+    pump_messages(Duration::from_millis(200));
+
+    // Screenshot 03: tab switched
+    screenshot::capture_window(
+        switched_hwnd,
+        "evidence/rules_auto_group/03_tab_switched.png",
+    );
+
+    // Phase 5: Cleanup
+    state::with_state(|s| {
+        s.overlays.remove_overlay(group_id);
+        s.groups.remove_from_group(discovered[0].hwnd);
+        s.groups.remove_from_group(discovered[1].hwnd);
+        s.windows.clear();
+        s.rules = crate::config::RulesEngine { groups: Vec::new() };
+        s.groups.pending_rules.clear();
+        s.groups.named_groups.clear();
+        s.shutdown();
+    });
+
+    // Close stdin to signal dummy to exit
+    drop(child.stdin.take());
+    let _ = child.wait();
 }

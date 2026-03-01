@@ -5,8 +5,10 @@ use windows_sys::Win32::Foundation::*;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetCapture;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
+use crate::config::{RulesEngine, WindowRuleInfo};
 use crate::group::GroupManager;
 use crate::overlay::{self, OverlayManager};
+use crate::position_store::{self, PositionStore, RectDef};
 use crate::window::{self, WindowInfo};
 
 pub struct PeekState {
@@ -23,6 +25,8 @@ pub struct AppState {
     pub peek: Option<PeekState>,
     suppress_events: bool,
     pub vdesktop: Option<crate::vdesktop::VDesktopManager>,
+    pub rules: RulesEngine,
+    pub position_store: PositionStore,
 }
 
 thread_local! {
@@ -34,6 +38,8 @@ thread_local! {
         peek: None,
         suppress_events: false,
         vdesktop: None,
+        rules: RulesEngine { groups: Vec::new() },
+        position_store: PositionStore::empty(),
     });
 }
 
@@ -73,9 +79,17 @@ impl AppState {
     pub fn init(&mut self) {
         self.vdesktop = crate::vdesktop::VDesktopManager::new();
 
+        // Load config and position store
+        if let Some(dir) = crate::appdata::config_dir() {
+            self.rules = RulesEngine::load(&dir.join("config.yaml"));
+            self.position_store = PositionStore::load(&dir.join("positions.yaml"));
+        }
+
         let windows = window::enumerate_windows();
         for info in windows {
-            self.windows.insert(info.hwnd, info);
+            let hwnd = info.hwnd;
+            self.windows.insert(hwnd, info);
+            self.apply_rules(hwnd);
         }
     }
 
@@ -128,12 +142,17 @@ impl AppState {
             return;
         }
         if let Some(info) = WindowInfo::from_hwnd(hwnd) {
+            self.try_restore_position(hwnd, &info);
             self.windows.insert(info.hwnd, info);
+            self.apply_rules(hwnd);
         }
     }
 
     pub fn on_window_destroyed(&mut self, hwnd: HWND) {
         self.windows.remove(&hwnd);
+
+        // Clean up pending rule singletons
+        self.groups.pending_rules.retain(|_, &mut h| h != hwnd);
 
         if self.peek.as_ref().map(|p| p.target_hwnd) == Some(hwnd) {
             self.hide_peek();
@@ -177,6 +196,23 @@ impl AppState {
 
         if let Some(info) = self.windows.get_mut(&hwnd) {
             info.refresh_rect();
+        }
+
+        // Record position for persistence
+        if let Some(info) = self.windows.get(&hwnd) {
+            let dpi = window::get_window_dpi(hwnd);
+            self.position_store.record(
+                &info.process_name,
+                &info.class_name,
+                &info.title,
+                RectDef {
+                    left: info.rect.left,
+                    top: info.rect.top,
+                    right: info.rect.right,
+                    bottom: info.rect.bottom,
+                },
+                dpi,
+            );
         }
 
         if let Some(gid) = self.groups.group_of(hwnd) {
@@ -280,9 +316,105 @@ impl AppState {
     }
 
     pub fn shutdown(&mut self) {
+        self.position_store.flush();
         self.hide_peek();
         self.groups.show_all_windows();
         self.overlays.destroy_all();
+    }
+
+    /// Apply rules engine to a window. If it matches a rule group:
+    /// - If there's already a pending singleton, create a real group.
+    /// - If there's an existing named group, add to it.
+    /// - Otherwise, record as pending singleton (no overlay yet).
+    pub(crate) fn apply_rules(&mut self, hwnd: HWND) {
+        if !self.rules.has_rules() {
+            return;
+        }
+        // Skip if already in a group
+        if self.groups.group_of(hwnd).is_some() {
+            return;
+        }
+        let info = match self.windows.get(&hwnd) {
+            Some(i) => i,
+            None => return,
+        };
+        let rule_info = WindowRuleInfo {
+            process_name: &info.process_name,
+            class_name: &info.class_name,
+            title: &info.title,
+        };
+        let group_name = match self.rules.apply(&rule_info) {
+            Some(name) => name.to_string(),
+            None => return,
+        };
+
+        // Check if there's an existing named group
+        if let Some(&gid) = self.groups.named_groups.get(&group_name) {
+            if self.groups.groups.contains_key(&gid) {
+                self.groups.add_to_group(gid, hwnd);
+                self.overlays
+                    .refresh_overlay(gid, &self.groups, &self.windows);
+                return;
+            }
+        }
+
+        // Check if there's a pending singleton
+        if let Some(pending_hwnd) = self.groups.pending_rules.remove(&group_name) {
+            if pending_hwnd != hwnd && self.windows.contains_key(&pending_hwnd) {
+                let gid = self.groups.create_group(pending_hwnd, hwnd);
+                self.groups.named_groups.insert(group_name, gid);
+                let ov = self.overlays.ensure_overlay(gid);
+                overlay::update_overlay(ov, gid, &self.groups, &self.windows);
+                return;
+            }
+        }
+
+        // Record as pending singleton
+        self.groups.pending_rules.insert(group_name, hwnd);
+    }
+
+    /// Try to restore a window's saved position from the position store.
+    pub(crate) fn try_restore_position(&mut self, hwnd: HWND, info: &WindowInfo) {
+        let entry = match self.position_store.lookup(
+            &info.process_name,
+            &info.class_name,
+            &info.title,
+        ) {
+            Some(e) => e,
+            None => return,
+        };
+
+        // Validate that a monitor exists at the saved rect
+        if !position_store::monitor_exists_for_rect(&entry.rect) {
+            return;
+        }
+
+        // Scale by DPI ratio
+        let current_dpi = window::get_window_dpi(hwnd);
+        let stored_dpi = entry.dpi;
+        let (left, top, right, bottom) = if stored_dpi > 0 && stored_dpi != current_dpi {
+            let scale = current_dpi as f64 / stored_dpi as f64;
+            (
+                (entry.rect.left as f64 * scale) as i32,
+                (entry.rect.top as f64 * scale) as i32,
+                (entry.rect.right as f64 * scale) as i32,
+                (entry.rect.bottom as f64 * scale) as i32,
+            )
+        } else {
+            (entry.rect.left, entry.rect.top, entry.rect.right, entry.rect.bottom)
+        };
+
+        unsafe {
+            SetWindowPos(
+                hwnd,
+                0 as _,
+                left,
+                top,
+                right - left,
+                bottom - top,
+                SWP_NOACTIVATE | SWP_NOZORDER,
+            );
+        }
     }
 
     pub fn hide_peek(&mut self) {

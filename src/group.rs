@@ -170,6 +170,10 @@ impl TabGroup {
 pub struct GroupManager {
     pub groups: HashMap<GroupId, TabGroup>,
     pub window_to_group: HashMap<HWND, GroupId>,
+    /// Maps rule group name → GroupId for established groups (2+ windows).
+    pub named_groups: HashMap<String, GroupId>,
+    /// Maps rule group name → HWND for singletons waiting for a second match.
+    pub pending_rules: HashMap<String, HWND>,
 }
 
 impl GroupManager {
@@ -177,6 +181,8 @@ impl GroupManager {
         GroupManager {
             groups: HashMap::new(),
             window_to_group: HashMap::new(),
+            named_groups: HashMap::new(),
+            pending_rules: HashMap::new(),
         }
     }
 
@@ -236,6 +242,7 @@ impl GroupManager {
                         self.window_to_group.remove(&h);
                     }
                 }
+                self.named_groups.retain(|_, &mut gid| gid != group_id);
             }
         }
     }
@@ -565,6 +572,15 @@ mod tests {
         assert_eq!(gm.group_of(fake_hwnd(100)), None);
         assert_eq!(gm.group_of(fake_hwnd(200)), None);
         assert!(!gm.groups.contains_key(&gid));
+    }
+
+    #[test]
+    fn named_groups_cleaned_on_dissolve() {
+        let mut gm = GroupManager::new();
+        let gid = gm.create_group(fake_hwnd(100), fake_hwnd(200));
+        gm.named_groups.insert("Terminals".to_string(), gid);
+        gm.remove_from_group(fake_hwnd(100));
+        assert!(!gm.named_groups.contains_key("Terminals"));
     }
 
     #[test]

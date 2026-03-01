@@ -1,11 +1,15 @@
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStringExt;
 
-use windows_sys::Win32::Foundation::{HWND, LPARAM, RECT, TRUE};
+use windows_sys::Win32::Foundation::{HWND, LPARAM, RECT, TRUE, CloseHandle, MAX_PATH};
 use windows_sys::Win32::Graphics::Dwm::{
     DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS,
 };
-use windows_sys::Win32::System::Threading::{GetCurrentProcessId};
+use windows_sys::Win32::System::Threading::{
+    GetCurrentProcessId, OpenProcess, QueryFullProcessImageNameW,
+    PROCESS_QUERY_LIMITED_INFORMATION,
+};
+use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 /// Metadata for a tracked window.
@@ -13,6 +17,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 pub struct WindowInfo {
     pub hwnd: HWND,
     pub title: String,
+    pub process_name: String,
+    pub class_name: String,
     pub icon: HICON,
     pub rect: RECT,
 }
@@ -25,6 +31,8 @@ impl WindowInfo {
         Some(WindowInfo {
             hwnd,
             title: get_window_title(hwnd),
+            process_name: get_process_name(hwnd),
+            class_name: get_class_name(hwnd),
             icon: get_window_icon(hwnd),
             rect: get_window_rect(hwnd),
         })
@@ -197,4 +205,56 @@ pub fn is_minimized(hwnd: HWND) -> bool {
 /// Check if a window still exists and is valid.
 pub fn is_window_valid(hwnd: HWND) -> bool {
     unsafe { IsWindow(hwnd) != 0 }
+}
+
+/// Get the window class name.
+pub fn get_class_name(hwnd: HWND) -> String {
+    unsafe {
+        let mut buf = [0u16; 256];
+        let len = GetClassNameW(hwnd, buf.as_mut_ptr(), buf.len() as i32);
+        if len == 0 {
+            return String::new();
+        }
+        OsString::from_wide(&buf[..len as usize])
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
+/// Get the process executable name (filename only, e.g. "Code.exe").
+pub fn get_process_name(hwnd: HWND) -> String {
+    unsafe {
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, &mut pid);
+        if pid == 0 {
+            return String::new();
+        }
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return String::new();
+        }
+        let mut buf = [0u16; MAX_PATH as usize];
+        let mut size = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut size);
+        CloseHandle(handle);
+        if ok == 0 || size == 0 {
+            return String::new();
+        }
+        let full = OsString::from_wide(&buf[..size as usize])
+            .to_string_lossy()
+            .into_owned();
+        // Extract just the filename
+        full.rsplit('\\')
+            .next()
+            .unwrap_or(&full)
+            .to_string()
+    }
+}
+
+/// Get the DPI for a window.
+pub fn get_window_dpi(hwnd: HWND) -> u32 {
+    unsafe {
+        let dpi = GetDpiForWindow(hwnd);
+        if dpi == 0 { 96 } else { dpi }
+    }
 }

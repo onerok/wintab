@@ -48,6 +48,11 @@ install:
 uninstall:
     cargo uninstall wintab
 
+# run E2E acceptance test with dummy process
+test-e2e:
+    cargo build --bin dummy_window
+    cargo test acceptance_rules_e2e -- --test-threads=1 --nocapture
+
 # clean build artifacts
 clean:
     cargo clean
