@@ -69,16 +69,28 @@ Power-user features for automatic workflow setup.
 
 From spec sections not yet in backlog. To be groomed as earlier milestones land.
 
-- Keyboard shortcuts (configurable hotkeys via `RegisterHotKey`)
-- Tab context menu (right-click: rename, close, close others, ungroup, blacklist)
+- Keyboard shortcuts (configurable hotkeys via `RegisterHotKey`; spec defines 16 shortcuts including tab nav, move, ungroup, rename)
+- Tab context menu (right-click: rename, close, close others, close all, ungroup, ungroup all, never tab this app, edit group)
 - Tab reordering (drag within tab bar)
 - Tab renaming (double-click inline edit)
 - Tab close button (X on each tab)
+- New tab button (+) at end of tab bar
+- Middle-click to close tab
 - Tab coloring (system accent / per-app / custom)
+- Tab position configuration (Top / Bottom)
 - Whitelist/blacklist exception management
 - Drag file over tab to switch
+- Move tab between groups (drag from Group A → Group B)
+- Auto-hide tabs at screen edge / maximized windows
+- Prevent tabs hidden by overlapping windows (force z-order above adjacent windows)
 - Start with Windows (registry run key)
+- Check for updates
+- Reset to defaults
+- About dialog (version info, tray menu item)
+- Tray icon left-click / double-click opens config dialog
+- New tab from running windows (`Ctrl+Win+T`) — window picker/selector UI
 - Window picker tool (crosshair for rule creation)
+- Config file watcher for live reload on external changes
 
 ---
 
@@ -90,4 +102,4 @@ From spec sections not yet in backlog. To be groomed as earlier milestones land.
 | **M4: Config** | 1 | None | Large | Todo |
 | **M5: Polish** | 2 | M3 (vdesktop APIs), M4 (settings) | Medium | Todo |
 | **M6: Automation** | 1 | M4, M5 | Large | Todo |
-| **Future** | 10+ | M4-M6 | TBD | Todo |
+| **Future** | 22 | M4-M6 | TBD | Todo |
