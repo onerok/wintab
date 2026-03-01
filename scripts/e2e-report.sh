@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Generate HTML report from E2E test results and screenshot evidence.
+# Generate HTML report by auto-discovering evidence/ directories and screenshots.
 # Usage: scripts/e2e-report.sh [test-output-file]
 #
-# Reads cargo test output (passed via file or stdin) and pairs it with
-# screenshots in evidence/ to produce evidence/report.html.
+# Scans evidence/*/ for directories containing *.png files. Each directory
+# becomes a scenario card. Test pass/fail status is matched from cargo test
+# output. No hardcoded scenario list — new tests appear automatically.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -14,26 +15,119 @@ TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
 
 # ── Collect test results from cargo output ──
 declare -A TEST_STATUS
+declare -a TEST_NAMES=()
 if [[ -f "$RESULTS_FILE" ]]; then
     while IFS= read -r line; do
         if [[ "$line" =~ ^test\ (.+)\ \.\.\.\ (ok|FAILED) ]]; then
-            name="${BASH_REMATCH[1]}"
-            status="${BASH_REMATCH[2]}"
-            TEST_STATUS["$name"]="$status"
+            TEST_STATUS["${BASH_REMATCH[1]}"]="${BASH_REMATCH[2]}"
+            TEST_NAMES+=("${BASH_REMATCH[1]}")
         fi
     done < "$RESULTS_FILE"
 fi
 
-# ── Test scenario definitions ──
-# Each scenario: test_name|display_name|evidence_dir|step descriptions
-# Steps are semicolon-separated: image_file:expect_lines (pipe-separated expects)
-SCENARIOS=(
-    "acceptance::acceptance_e2e_group_lifecycle|E2E Group Lifecycle|e2e_group_lifecycle|01_group_created.png:EXPECT: Overlay tab bar visible above the active window|EXPECT: Two tabs displayed in the overlay bar|NOT EXPECT: Windows without overlay;02_tab_switched.png:EXPECT: Tab 0 (first window) now visible|EXPECT: Overlay shows Tab 0 as active|NOT EXPECT: Both windows visible simultaneously;03_ungrouped.png:EXPECT: Both windows visible, no overlay|NOT EXPECT: Overlay tab bar still present"
-    "acceptance::acceptance_e2e_minimize_restore|E2E Minimize / Restore|e2e_minimize_restore|01_grouped.png:EXPECT: Overlay tab bar visible above the active window;02_minimized.png:EXPECT: Window minimized, overlay hidden|NOT EXPECT: Overlay tab bar still visible;03_restored.png:EXPECT: Window restored, overlay tab bar visible again|NOT EXPECT: Overlay still hidden"
-    "acceptance::acceptance_rules_e2e_auto_group|E2E Rules Auto-Group|rules_auto_group|01_windows_discovered.png:EXPECT: Two DummyApp windows from separate process visible|NOT EXPECT: Overlay tab bar (windows not yet grouped);02_auto_grouped.png:EXPECT: Rules engine grouped both windows, overlay visible|EXPECT: Two tabs in overlay with active tab highlighted;03_tab_switched.png:EXPECT: Tab 0 now active, overlay reflects the switch|NOT EXPECT: Previous tab still showing as active"
-    "acceptance::acceptance_group_lifecycle|Group Lifecycle (in-process)|group_lifecycle|01_group_created.png:EXPECT: Overlay tab bar visible above the active window|EXPECT: Two tabs displayed in the overlay bar;02_tab_switched.png:EXPECT: Tab 0 visible, Tab 1 hidden|NOT EXPECT: Both windows visible simultaneously;03_ungrouped.png:EXPECT: Both windows visible, no overlay|NOT EXPECT: Overlay tab bar still present"
-    "acceptance::acceptance_minimize_restore_group|Minimize / Restore (in-process)|minimize_restore|01_minimized.png:EXPECT: Active window minimized to taskbar|NOT EXPECT: Overlay tab bar still visible;02_restored.png:EXPECT: Window restored, overlay tab bar visible again|NOT EXPECT: Overlay still hidden"
-)
+# ── Helpers ──
+
+# Convert snake_case directory name to display title.
+# e2e_group_lifecycle → E2E Group Lifecycle
+to_title() {
+    local s="${1//_/ }"
+    # Capitalize first letter of each word
+    s=$(echo "$s" | awk '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) substr($i,2)} 1')
+    # Fix common abbreviations that get title-cased wrong
+    s="${s//E2e/E2E}"
+    s="${s//Ui/UI}"
+    s="${s//Api/API}"
+    echo "$s"
+}
+
+# Convert screenshot filename to step label.
+# 01_group_created.png → Group Created
+to_step_label() {
+    local s="${1%.png}"
+    # Strip leading number prefix (01_, 02_, etc.)
+    s="${s#[0-9][0-9]_}"
+    s="${s//_/ }"
+    # Capitalize first letter of each word
+    echo "$s" | awk '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) substr($i,2)} 1'
+}
+
+# Find the best matching test name for a directory.
+# Returns the test name or empty string if no match.
+match_test() {
+    local dir="$1"
+    # 1. Exact match: acceptance::acceptance_<dir>
+    local exact="acceptance::acceptance_${dir}"
+    if [[ -v "TEST_STATUS[$exact]" ]]; then
+        echo "$exact"
+        return
+    fi
+    # 2. Substring: dir name contained in test name (after prefix)
+    for t in "${TEST_NAMES[@]}"; do
+        local suffix="${t#acceptance::acceptance_}"
+        if [[ "$suffix" == *"$dir"* ]]; then
+            echo "$t"
+            return
+        fi
+    done
+    # 3. Reverse substring: test suffix contained in dir name
+    for t in "${TEST_NAMES[@]}"; do
+        local suffix="${t#acceptance::acceptance_}"
+        if [[ "$dir" == *"$suffix"* ]]; then
+            echo "$t"
+            return
+        fi
+    done
+    # 4. Word match: all underscore-delimited words in dir appear in test name
+    local best=""
+    for t in "${TEST_NAMES[@]}"; do
+        local suffix="${t#acceptance::acceptance_}"
+        local all_match=true
+        IFS='_' read -ra words <<< "$dir"
+        for w in "${words[@]}"; do
+            if [[ "$suffix" != *"$w"* ]]; then
+                all_match=false
+                break
+            fi
+        done
+        if $all_match; then
+            best="$t"
+            break
+        fi
+    done
+    echo "$best"
+}
+
+# ── Auto-discover scenarios ──
+SCENARIO_DIRS=()
+for d in evidence/*/; do
+    [[ -d "$d" ]] || continue
+    dir_name="$(basename "$d")"
+    # Must contain at least one PNG
+    shopt -s nullglob
+    pngs=("$d"*.png)
+    shopt -u nullglob
+    if [[ ${#pngs[@]} -gt 0 ]]; then
+        SCENARIO_DIRS+=("$dir_name")
+    fi
+done
+
+# Sort alphabetically
+IFS=$'\n' SCENARIO_DIRS=($(sort <<<"${SCENARIO_DIRS[*]}")); unset IFS
+
+# ── Count results for summary ──
+pass=0; fail=0; skip=0
+for dir in "${SCENARIO_DIRS[@]}"; do
+    test_name=$(match_test "$dir")
+    if [[ -n "$test_name" ]]; then
+        if [[ "${TEST_STATUS[$test_name]}" == "ok" ]]; then
+            pass=$((pass + 1))
+        else
+            fail=$((fail + 1))
+        fi
+    else
+        skip=$((skip + 1))
+    fi
+done
 
 # ── Generate HTML ──
 cat > "$REPORT" <<'HEADER'
@@ -49,7 +143,13 @@ cat > "$REPORT" <<'HEADER'
   body { font-family: -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif;
          background: var(--bg); color: var(--text); padding: 2rem; line-height: 1.5; }
   h1 { font-size: 1.6rem; margin-bottom: .25rem; }
-  .meta { color: var(--dim); font-size: .85rem; margin-bottom: 2rem; }
+  .meta { color: var(--dim); font-size: .85rem; margin-bottom: .75rem; }
+  .summary { display: flex; gap: 1rem; margin-bottom: 2rem; }
+  .summary-stat { font-size: .9rem; font-weight: 600; padding: .3rem .75rem;
+                  border-radius: 6px; }
+  .summary-pass { background: rgba(63,185,80,.15); color: var(--green); }
+  .summary-fail { background: rgba(248,81,73,.15); color: var(--red); }
+  .summary-skip { background: rgba(139,148,158,.15); color: var(--dim); }
   .scenario { background: var(--card); border: 1px solid var(--border);
               border-radius: 8px; margin-bottom: 2rem; overflow: hidden; }
   .scenario-header { display: flex; align-items: center; gap: .75rem;
@@ -66,11 +166,6 @@ cat > "$REPORT" <<'HEADER'
   .step img { width: 100%; border-radius: 6px; border: 1px solid var(--border);
               margin-bottom: .5rem; cursor: pointer; transition: transform .15s; }
   .step img:hover { transform: scale(1.02); }
-  .expects { list-style: none; font-size: .82rem; }
-  .expects li { padding: .15rem 0; padding-left: 1.2em; text-indent: -1.2em; }
-  .expects li::before { margin-right: .35em; }
-  .expect-yes::before { content: "\2705"; }
-  .expect-no::before  { content: "\274C"; }
   .no-evidence { color: var(--dim); font-style: italic; padding: 1.25rem; }
   /* lightbox */
   .lightbox { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.85);
@@ -83,25 +178,37 @@ cat > "$REPORT" <<'HEADER'
 <h1>WinTab E2E Test Report</h1>
 HEADER
 
-echo "<p class=\"meta\">Generated: ${TIMESTAMP}</p>" >> "$REPORT"
+echo "<p class=\"meta\">Generated: ${TIMESTAMP} &middot; ${#SCENARIO_DIRS[@]} scenarios</p>" >> "$REPORT"
 
-# Lightbox container
+# Summary bar
+cat >> "$REPORT" <<SUMMARY
+<div class="summary">
+  <span class="summary-stat summary-pass">${pass} passed</span>
+  <span class="summary-stat summary-fail">${fail} failed</span>
+  <span class="summary-stat summary-skip">${skip} not run</span>
+</div>
+SUMMARY
+
+# Lightbox
 echo '<div class="lightbox" id="lb" onclick="this.classList.remove('"'"'active'"'"')"><img id="lb-img"></div>' >> "$REPORT"
 
-for scenario in "${SCENARIOS[@]}"; do
-    IFS='|' read -r test_name display_name evidence_dir steps_raw <<< "$scenario"
+# ── Emit each scenario ──
+for dir in "${SCENARIO_DIRS[@]}"; do
+    display_name=$(to_title "$dir")
+    test_name=$(match_test "$dir")
 
-    # Determine status
-    status="${TEST_STATUS[$test_name]:-skip}"
-    if [[ "$status" == "ok" ]]; then
-        badge_class="badge-pass"
-        badge_text="PASS"
-    elif [[ "$status" == "FAILED" ]]; then
-        badge_class="badge-fail"
-        badge_text="FAIL"
+    # Badge
+    if [[ -n "$test_name" ]]; then
+        status="${TEST_STATUS[$test_name]}"
+        if [[ "$status" == "ok" ]]; then
+            badge_class="badge-pass"; badge_text="PASS"
+        else
+            badge_class="badge-fail"; badge_text="FAIL"
+        fi
+        test_label="$test_name"
     else
-        badge_class="badge-skip"
-        badge_text="NOT RUN"
+        badge_class="badge-skip"; badge_text="NOT RUN"
+        test_label="(no matching test)"
     fi
 
     cat >> "$REPORT" <<SCENARIO_HEAD
@@ -109,46 +216,28 @@ for scenario in "${SCENARIOS[@]}"; do
   <div class="scenario-header">
     <span class="badge ${badge_class}">${badge_text}</span>
     <h2>${display_name}</h2>
-    <span style="color:var(--dim);font-size:.8rem;margin-left:auto;">${test_name}</span>
+    <span style="color:var(--dim);font-size:.8rem;margin-left:auto;">${test_label}</span>
   </div>
   <div class="steps">
 SCENARIO_HEAD
 
-    # Parse steps (semicolon-separated)
-    IFS=';' read -ra step_list <<< "$steps_raw"
+    # Discover and sort PNGs
+    shopt -s nullglob
+    pngs=("evidence/$dir/"*.png)
+    shopt -u nullglob
+
     step_num=1
-    for step_entry in "${step_list[@]}"; do
-        # First token before : is the image filename, rest are expect lines (pipe-separated)
-        img_file="${step_entry%%:*}"
-        expects_raw="${step_entry#*:}"
-        img_path="evidence/${evidence_dir}/${img_file}"
-        # Relative path from report location
-        rel_img="${evidence_dir}/${img_file}"
+    for img_path in "${pngs[@]}"; do
+        img_file="$(basename "$img_path")"
+        rel_img="${dir}/${img_file}"
+        step_label=$(to_step_label "$img_file")
 
-        step_label="${img_file%.png}"
-        step_label="${step_label//_/ }"
-
-        echo "    <div class=\"step\">" >> "$REPORT"
-        echo "      <div class=\"step-title\">Step ${step_num}: ${step_label}</div>" >> "$REPORT"
-
-        if [[ -f "$img_path" ]]; then
-            echo "      <img src=\"${rel_img}\" alt=\"${step_label}\" onclick=\"document.getElementById('lb-img').src=this.src;document.getElementById('lb').classList.add('active');\">" >> "$REPORT"
-        else
-            echo "      <div class=\"no-evidence\">Screenshot not found: ${rel_img}</div>" >> "$REPORT"
-        fi
-
-        echo "      <ul class=\"expects\">" >> "$REPORT"
-        IFS='|' read -ra expect_lines <<< "$expects_raw"
-        for exp in "${expect_lines[@]}"; do
-            if [[ "$exp" == NOT\ EXPECT:* ]]; then
-                echo "        <li class=\"expect-no\">${exp}</li>" >> "$REPORT"
-            else
-                echo "        <li class=\"expect-yes\">${exp}</li>" >> "$REPORT"
-            fi
-        done
-        echo "      </ul>" >> "$REPORT"
-        echo "    </div>" >> "$REPORT"
-
+        cat >> "$REPORT" <<STEP
+    <div class="step">
+      <div class="step-title">Step ${step_num}: ${step_label}</div>
+      <img src="${rel_img}" alt="${step_label}" onclick="document.getElementById('lb-img').src=this.src;document.getElementById('lb').classList.add('active');">
+    </div>
+STEP
         step_num=$((step_num + 1))
     done
 
@@ -166,4 +255,4 @@ document.addEventListener('keydown', e => {
 </html>
 FOOTER
 
-echo "Report generated: ${REPORT}"
+echo "Report generated: ${REPORT} (${#SCENARIO_DIRS[@]} scenarios: ${pass} pass, ${fail} fail, ${skip} not run)"

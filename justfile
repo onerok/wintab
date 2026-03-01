@@ -58,10 +58,7 @@ uninstall:
 test-e2e:
     cargo build --bin dummy_window
     mkdir -p evidence
-    cargo test acceptance_group_lifecycle -- --test-threads=1 --nocapture 2>&1 | tee evidence/test-results.txt || true
-    cargo test acceptance_minimize_restore_group -- --test-threads=1 --nocapture 2>&1 | tee -a evidence/test-results.txt || true
-    cargo test acceptance_e2e -- --test-threads=1 --nocapture 2>&1 | tee -a evidence/test-results.txt || true
-    cargo test acceptance_rules_e2e -- --test-threads=1 --nocapture 2>&1 | tee -a evidence/test-results.txt || true
+    cargo test acceptance -- --test-threads=1 --nocapture 2>&1 | tee evidence/test-results.txt || true
     bash scripts/e2e-report.sh
 
 # clean build artifacts
