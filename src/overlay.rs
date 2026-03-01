@@ -7,7 +7,7 @@ use windows_sys::Win32::UI::Controls::{
     NMHDR, NMTTDISPINFOW, TTTOOLINFOW,
     TOOLTIPS_CLASSW, TTDT_INITIAL,
     TTF_IDISHWND, TTF_SUBCLASS,
-    TTM_ADDTOOLW, TTM_SETDELAYTIME,
+    TTM_ADDTOOLW, TTM_SETDELAYTIME, TTM_UPDATE,
     TTN_GETDISPINFOW, TTS_ALWAYSTIP, TTS_NOPREFIX,
     WM_MOUSELEAVE,
 };
@@ -16,6 +16,7 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
+use crate::drag;
 use crate::group::{GroupId, GroupManager};
 use crate::state;
 use crate::window::{self, WindowInfo};
@@ -148,6 +149,22 @@ pub fn destroy_overlay(hwnd: HWND) {
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
         }
         DestroyWindow(hwnd);
+    }
+}
+
+/// Tell the tooltip control to re-query its text on the next show.
+/// Called after a window title changes so the tooltip reflects the new title.
+pub fn refresh_tooltip(overlay_hwnd: HWND) {
+    unsafe {
+        let ptr = GetWindowLongPtrW(overlay_hwnd, GWLP_USERDATA) as *const OverlayData;
+        if ptr.is_null() {
+            return;
+        }
+        let tooltip = (*ptr).tooltip_hwnd;
+        if tooltip.is_null() {
+            return;
+        }
+        SendMessageW(tooltip, TTM_UPDATE, 0, 0);
     }
 }
 
@@ -732,6 +749,11 @@ fn is_title_truncated(text_width: i32, available_width: i32) -> bool {
 }
 
 unsafe fn handle_tooltip_getdispinfo(overlay_hwnd: HWND, lparam: isize) {
+    // Suppress tooltip text while a drag is in progress
+    if drag::is_dragging() {
+        return;
+    }
+
     let nmdi = &mut *(lparam as *mut NMTTDISPINFOW);
 
     let ptr = GetWindowLongPtrW(overlay_hwnd, GWLP_USERDATA) as *const OverlayData;
