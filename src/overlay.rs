@@ -94,7 +94,10 @@ fn create_tooltip(parent: HWND) -> HWND {
         }
 
         let mut ti: TTTOOLINFOW = std::mem::zeroed();
-        ti.cbSize = std::mem::size_of::<TTTOOLINFOW>() as u32;
+        // Use size without the v6-only `lpReserved` field.
+        // Without a comctl32 v6 manifest, TTM_ADDTOOLW rejects the full struct size.
+        ti.cbSize = (std::mem::size_of::<TTTOOLINFOW>()
+            - std::mem::size_of::<*mut std::ffi::c_void>()) as u32;
         ti.uFlags = TTF_SUBCLASS | TTF_IDISHWND;
         ti.hwnd = parent;
         ti.uId = parent as usize;
@@ -696,6 +699,16 @@ fn set_hover_tab(overlay_hwnd: HWND, tab_index: i32) {
                 // Called from wndproc (outside with_state), safe to use standalone
                 update_overlay_standalone(overlay_hwnd, data.group_id);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+pub fn set_test_hover_tab(overlay_hwnd: HWND, tab: i32) {
+    unsafe {
+        let ptr = GetWindowLongPtrW(overlay_hwnd, GWLP_USERDATA) as *mut OverlayData;
+        if !ptr.is_null() {
+            (*ptr).hover_tab = tab;
         }
     }
 }

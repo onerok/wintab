@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use windows_sys::Win32::Foundation::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::UI::Controls::{NMTTDISPINFOW, TTM_GETTOOLCOUNT, TTN_GETDISPINFOW};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use crate::overlay;
@@ -1518,6 +1519,15 @@ fn acceptance_tooltip_created_with_overlay() {
         assert_ne!(IsWindow(tooltip_hwnd), 0, "Tooltip should be a valid window");
     }
 
+    // Tooltip should have a registered tool (TTM_ADDTOOLW must have succeeded)
+    let tool_count = unsafe { SendMessageW(tooltip_hwnd, TTM_GETTOOLCOUNT, 0, 0) };
+    assert!(
+        tool_count > 0,
+        "Tooltip should have at least one registered tool, but has {}. \
+         TTM_ADDTOOLW likely failed due to wrong cbSize (v6 struct size without v6 manifest).",
+        tool_count
+    );
+
     // Destroy overlay
     state::with_state(|s| {
         s.overlays.remove_overlay(group_id);
@@ -1541,6 +1551,105 @@ fn acceptance_tooltip_created_with_overlay() {
 
     // Cleanup
     state::with_state(|s| {
+        s.groups.remove_from_group(win1);
+        s.groups.remove_from_group(win2);
+        s.windows.remove(&win1);
+        s.windows.remove(&win2);
+        s.shutdown();
+    });
+    unsafe {
+        DestroyWindow(win1);
+        DestroyWindow(win2);
+    }
+}
+
+#[test]
+fn acceptance_tooltip_shows_truncated_title() {
+    overlay::register_class();
+    let test_class = register_test_class();
+
+    // Use a title long enough to guarantee truncation at MAX_TAB_WIDTH (200px)
+    let long_title =
+        "This is a very long window title that should definitely be truncated in the tab bar overlay widget";
+    let win1 = create_test_window(&test_class, long_title);
+    let win2 = create_test_window(&test_class, "Short");
+    assert!(!win1.is_null());
+    assert!(!win2.is_null());
+
+    state::with_state(|s| {
+        s.windows.insert(win1, make_window_info(win1));
+        s.windows.insert(win2, make_window_info(win2));
+    });
+
+    pump_messages(Duration::from_millis(100));
+
+    let group_id = state::with_state(|s| {
+        let gid = s.groups.create_group(win1, win2);
+        let ov = s.overlays.ensure_overlay(gid);
+        overlay::update_overlay(ov, gid, &s.groups, &s.windows);
+        gid
+    });
+
+    pump_messages(Duration::from_millis(100));
+
+    let (ov_hwnd, tooltip_hwnd) = state::with_state(|s| {
+        let ov = *s.overlays.overlays.get(&group_id).unwrap();
+        let tt = overlay::get_tooltip_hwnd(ov);
+        (ov, tt)
+    });
+
+    assert!(!tooltip_hwnd.is_null(), "Tooltip should be created");
+
+    // Verify the title is actually in state
+    let title_in_state = state::with_state(|s| {
+        s.windows.get(&win1).map(|info| info.title.clone())
+    });
+    assert!(
+        title_in_state.is_some(),
+        "Window title should be in state"
+    );
+    assert!(
+        title_in_state.as_ref().unwrap().len() > 20,
+        "Title should be long, got: {:?}",
+        title_in_state
+    );
+
+    // Set hover_tab = 0 so handler knows which tab we're hovering
+    overlay::set_test_hover_tab(ov_hwnd, 0);
+
+    // Simulate TTN_GETDISPINFOW notification (same path as real tooltip)
+    let mut nmdi: NMTTDISPINFOW = unsafe { std::mem::zeroed() };
+    nmdi.hdr.hwndFrom = tooltip_hwnd;
+    nmdi.hdr.idFrom = ov_hwnd as usize;
+    nmdi.hdr.code = TTN_GETDISPINFOW;
+
+    unsafe {
+        SendMessageW(
+            ov_hwnd,
+            WM_NOTIFY,
+            0,
+            &mut nmdi as *mut _ as isize,
+        );
+    }
+
+    // szText should have been filled with the truncated title
+    let text_len = nmdi.szText.iter().position(|&c| c == 0).unwrap_or(80);
+    assert!(
+        text_len > 0,
+        "Tooltip szText should contain the title text, but was empty. \
+         This means handle_tooltip_getdispinfo did not fill the tooltip text."
+    );
+
+    let tooltip_text = String::from_utf16_lossy(&nmdi.szText[..text_len]);
+    assert!(
+        long_title.starts_with(&tooltip_text),
+        "Tooltip text '{}' should be a prefix of the long title",
+        tooltip_text
+    );
+
+    // Cleanup
+    state::with_state(|s| {
+        s.overlays.remove_overlay(group_id);
         s.groups.remove_from_group(win1);
         s.groups.remove_from_group(win2);
         s.windows.remove(&win1);
