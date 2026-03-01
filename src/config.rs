@@ -107,7 +107,9 @@ impl Matcher {
                 if *case_sensitive {
                     value.contains(pat.as_str())
                 } else {
-                    value.to_ascii_lowercase().contains(&pat.to_ascii_lowercase())
+                    value
+                        .to_ascii_lowercase()
+                        .contains(&pat.to_ascii_lowercase())
                 }
             }
             Matcher::StartsWith(pat, case_sensitive) => {
@@ -172,11 +174,8 @@ impl RulesEngine {
             .rules
             .into_iter()
             .filter_map(|def| {
-                let rules: Vec<WindowRule> = def
-                    .patterns
-                    .into_iter()
-                    .filter_map(parse_pattern)
-                    .collect();
+                let rules: Vec<WindowRule> =
+                    def.patterns.into_iter().filter_map(parse_pattern).collect();
                 if rules.is_empty() {
                     return None;
                 }
@@ -490,6 +489,58 @@ mod tests {
         assert_eq!(engine.groups[0].name, "Terminals");
         assert_eq!(engine.groups[0].match_mode, MatchMode::Any);
         assert_eq!(engine.groups[0].rules.len(), 2);
+
+        let i = info("WindowsTerminal.exe", "", "");
+        assert_eq!(engine.apply(&i), Some("Terminals"));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn reload_picks_up_new_rules() {
+        let dir = std::env::temp_dir().join("wintab_test_reload");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("reload.yaml");
+
+        // Initial config: one rule group
+        std::fs::write(
+            &path,
+            r#"rules:
+  - name: "Editors"
+    patterns:
+      - field: process_name
+        op: equals
+        value: "code.exe"
+"#,
+        )
+        .unwrap();
+        let engine = RulesEngine::load(&path);
+        assert_eq!(engine.groups.len(), 1);
+        assert_eq!(engine.groups[0].name, "Editors");
+
+        // Modify config: two rule groups
+        std::fs::write(
+            &path,
+            r#"rules:
+  - name: "Editors"
+    patterns:
+      - field: process_name
+        op: equals
+        value: "code.exe"
+  - name: "Terminals"
+    patterns:
+      - field: process_name
+        op: equals
+        value: "WindowsTerminal.exe"
+"#,
+        )
+        .unwrap();
+
+        // Reload
+        let engine = RulesEngine::load(&path);
+        assert_eq!(engine.groups.len(), 2);
+        assert_eq!(engine.groups[0].name, "Editors");
+        assert_eq!(engine.groups[1].name, "Terminals");
 
         let i = info("WindowsTerminal.exe", "", "");
         assert_eq!(engine.apply(&i), Some("Terminals"));

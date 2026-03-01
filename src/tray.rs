@@ -84,13 +84,9 @@ fn show_context_menu(hwnd: HWND) {
 
         let enabled = crate::state::with_state(|s| s.enabled);
 
-        let label: Vec<u16> = if enabled {
-            "Disable\0"
-        } else {
-            "Enable\0"
-        }
-        .encode_utf16()
-        .collect();
+        let label: Vec<u16> = if enabled { "Disable\0" } else { "Enable\0" }
+            .encode_utf16()
+            .collect();
         AppendMenuW(menu, MF_STRING, IDM_DISABLE as usize, label.as_ptr());
 
         AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());

@@ -11,6 +11,7 @@ mod preview;
 mod state;
 mod tray;
 mod vdesktop;
+mod watcher;
 mod window;
 
 #[cfg(test)]
@@ -26,8 +27,16 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 static MSG_WINDOW_CLASS: &[u16] = &[
-    b'W' as u16, b'i' as u16, b'n' as u16, b'T' as u16, b'a' as u16, b'b' as u16,
-    b'M' as u16, b's' as u16, b'g' as u16, 0,
+    b'W' as u16,
+    b'i' as u16,
+    b'n' as u16,
+    b'T' as u16,
+    b'a' as u16,
+    b'b' as u16,
+    b'M' as u16,
+    b's' as u16,
+    b'g' as u16,
+    0,
 ];
 
 fn main() {
@@ -57,6 +66,11 @@ fn main() {
         hook::install();
         SetTimer(msg_hwnd, 1, 60, None);
         tray::add_tray_icon(msg_hwnd);
+
+        // Start config file watcher for hot-reload
+        if let Some(config_dir) = appdata::config_dir() {
+            watcher::start_config_watcher(&config_dir, msg_hwnd, watcher::WM_WINTAB_CONFIG_RELOAD);
+        }
 
         // Message loop
         let mut msg: MSG = std::mem::zeroed();
@@ -135,6 +149,10 @@ unsafe extern "system" fn msg_wnd_proc(
             } else {
                 DefWindowProcW(hwnd, msg, wparam, lparam)
             }
+        }
+        m if m == watcher::WM_WINTAB_CONFIG_RELOAD => {
+            state::with_state(|s| s.reload_config());
+            0
         }
         WM_TIMER => {
             state::with_state(|s| s.on_peek_timer());

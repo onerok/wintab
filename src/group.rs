@@ -25,7 +25,10 @@ pub struct TabGroup {
 impl TabGroup {
     pub fn active_hwnd(&self) -> HWND {
         debug_assert!(!self.tabs.is_empty(), "active_hwnd called on empty group");
-        self.tabs.get(self.active).copied().unwrap_or(std::ptr::null_mut())
+        self.tabs
+            .get(self.active)
+            .copied()
+            .unwrap_or(std::ptr::null_mut())
     }
 
     /// Switch to a different tab by index.
@@ -350,11 +353,14 @@ mod tests {
     fn is_active_in_group_true_for_active_window() {
         let mut gm = GroupManager::new();
         let id = 10;
-        gm.groups.insert(id, TabGroup {
+        gm.groups.insert(
             id,
-            tabs: vec![fake_hwnd(100), fake_hwnd(200)],
-            active: 0,
-        });
+            TabGroup {
+                id,
+                tabs: vec![fake_hwnd(100), fake_hwnd(200)],
+                active: 0,
+            },
+        );
         assert!(gm.is_active_in_group(id, fake_hwnd(100)));
     }
 
@@ -362,11 +368,14 @@ mod tests {
     fn is_active_in_group_false_for_inactive_window() {
         let mut gm = GroupManager::new();
         let id = 10;
-        gm.groups.insert(id, TabGroup {
+        gm.groups.insert(
             id,
-            tabs: vec![fake_hwnd(100), fake_hwnd(200)],
-            active: 0,
-        });
+            TabGroup {
+                id,
+                tabs: vec![fake_hwnd(100), fake_hwnd(200)],
+                active: 0,
+            },
+        );
         assert!(!gm.is_active_in_group(id, fake_hwnd(200)));
     }
 
@@ -380,11 +389,14 @@ mod tests {
     fn is_active_in_group_false_for_empty_group() {
         let mut gm = GroupManager::new();
         let id = 10;
-        gm.groups.insert(id, TabGroup {
+        gm.groups.insert(
             id,
-            tabs: vec![],
-            active: 0,
-        });
+            TabGroup {
+                id,
+                tabs: vec![],
+                active: 0,
+            },
+        );
         assert!(!gm.is_active_in_group(id, fake_hwnd(100)));
     }
 
@@ -524,7 +536,10 @@ mod tests {
             active: 0,
         };
         group.add(fake_hwnd(300));
-        assert_eq!(group.tabs, vec![fake_hwnd(100), fake_hwnd(200), fake_hwnd(300)]);
+        assert_eq!(
+            group.tabs,
+            vec![fake_hwnd(100), fake_hwnd(200), fake_hwnd(300)]
+        );
         assert_eq!(group.active, 2);
     }
 
