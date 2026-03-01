@@ -11,6 +11,8 @@ mod window;
 
 #[cfg(test)]
 mod acceptance;
+#[cfg(test)]
+mod screenshot;
 
 use std::panic;
 

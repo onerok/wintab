@@ -15,6 +15,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use crate::overlay;
 use crate::state;
 use crate::window;
+use crate::screenshot;
 use crate::window::WindowInfo;
 
 /// Pump the Win32 message queue for the given duration.
@@ -146,6 +147,9 @@ fn acceptance_group_lifecycle() {
         );
     }
 
+    // Screenshot: group created with overlay visible above active window
+    screenshot::capture_window(win2, "evidence/group_lifecycle/01_group_created.png");
+
     // 9. Assert group has 2 tabs with win2 active
     state::with_state(|s| {
         let group = s.groups.groups.get(&group_id).expect("Group not found");
@@ -175,6 +179,9 @@ fn acceptance_group_lifecycle() {
         );
     }
 
+    // Screenshot: after switching to tab 0 (win1 visible, win2 hidden)
+    screenshot::capture_window(win1, "evidence/group_lifecycle/02_tab_switched.png");
+
     // 12. Ungroup: remove win1 from the group (dissolves the 2-tab group)
     state::with_state(|s| {
         s.groups.remove_from_group(win1);
@@ -196,6 +203,9 @@ fn acceptance_group_lifecycle() {
             "win2 should be visible after ungroup"
         );
     }
+
+    // Screenshot: after ungrouping (both windows visible, no overlay)
+    screenshot::capture_window(win1, "evidence/group_lifecycle/03_ungrouped.png");
 
     // 14. Assert no group references remain
     state::with_state(|s| {
@@ -837,6 +847,9 @@ fn acceptance_minimize_restore_group() {
         );
     }
 
+    // Screenshot: overlay hidden after minimize
+    screenshot::capture_window(win2, "evidence/minimize_restore/01_minimized.png");
+
     // Restore via state handler
     state::with_state(|s| {
         s.on_restore(win2);
@@ -852,6 +865,9 @@ fn acceptance_minimize_restore_group() {
             "Overlay should be visible after restore"
         );
     }
+
+    // Screenshot: overlay visible again after restore
+    screenshot::capture_window(win2, "evidence/minimize_restore/02_restored.png");
 
     // Cleanup
     state::with_state(|s| {
