@@ -107,7 +107,9 @@ impl Matcher {
                 if *case_sensitive {
                     value.contains(pat.as_str())
                 } else {
-                    value.to_ascii_lowercase().contains(&pat.to_ascii_lowercase())
+                    value
+                        .to_ascii_lowercase()
+                        .contains(&pat.to_ascii_lowercase())
                 }
             }
             Matcher::StartsWith(pat, case_sensitive) => {
@@ -172,11 +174,8 @@ impl RulesEngine {
             .rules
             .into_iter()
             .filter_map(|def| {
-                let rules: Vec<WindowRule> = def
-                    .patterns
-                    .into_iter()
-                    .filter_map(parse_pattern)
-                    .collect();
+                let rules: Vec<WindowRule> =
+                    def.patterns.into_iter().filter_map(parse_pattern).collect();
                 if rules.is_empty() {
                     return None;
                 }

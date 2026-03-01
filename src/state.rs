@@ -73,9 +73,7 @@ pub fn try_with_state_ret<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut AppState) -> R,
 {
-    STATE.with(|cell| {
-        cell.try_borrow_mut().ok().map(|mut state| f(&mut state))
-    })
+    STATE.with(|cell| cell.try_borrow_mut().ok().map(|mut state| f(&mut state)))
 }
 
 impl AppState {
@@ -218,7 +216,8 @@ impl AppState {
 
         if let Some(gid) = self.groups.group_of(hwnd) {
             self.groups.remove_from_group(hwnd);
-            self.overlays.refresh_overlay(gid, &self.groups, &self.windows);
+            self.overlays
+                .refresh_overlay(gid, &self.groups, &self.windows);
         }
     }
 
@@ -261,6 +260,10 @@ impl AppState {
         // Record position for persistence
         if let Some(info) = self.windows.get(&hwnd) {
             let dpi = window::get_window_dpi(hwnd);
+            let desktop_id = self
+                .vdesktop
+                .as_ref()
+                .and_then(|vd| vd.get_desktop_id(hwnd));
             self.position_store.record(
                 &info.process_name,
                 &info.class_name,
@@ -272,6 +275,7 @@ impl AppState {
                     bottom: info.rect.bottom,
                 },
                 dpi,
+                desktop_id.as_ref(),
             );
         }
 
@@ -326,7 +330,10 @@ impl AppState {
                     SetWindowPos(
                         ov,
                         HWND_TOPMOST,
-                        0, 0, 0, 0,
+                        0,
+                        0,
+                        0,
+                        0,
                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
                     );
                 }
@@ -447,18 +454,27 @@ impl AppState {
 
     /// Try to restore a window's saved position from the position store.
     pub(crate) fn try_restore_position(&mut self, hwnd: HWND, info: &WindowInfo) {
-        let entry = match self.position_store.lookup(
-            &info.process_name,
-            &info.class_name,
-            &info.title,
-        ) {
-            Some(e) => e,
-            None => return,
-        };
+        let entry =
+            match self
+                .position_store
+                .lookup(&info.process_name, &info.class_name, &info.title)
+            {
+                Some(e) => e.clone(),
+                None => return,
+            };
 
         // Validate that a monitor exists at the saved rect
         if !position_store::monitor_exists_for_rect(&entry.rect) {
             return;
+        }
+
+        // Move to saved virtual desktop if available
+        if let Some(ref hex) = entry.desktop_id {
+            if let Some(ref vd) = self.vdesktop {
+                if let Some(bytes) = position_store::hex_decode(hex) {
+                    vd.move_to_desktop(hwnd, &bytes);
+                }
+            }
         }
 
         // Scale by DPI ratio
@@ -473,7 +489,12 @@ impl AppState {
                 (entry.rect.bottom as f64 * scale) as i32,
             )
         } else {
-            (entry.rect.left, entry.rect.top, entry.rect.right, entry.rect.bottom)
+            (
+                entry.rect.left,
+                entry.rect.top,
+                entry.rect.right,
+                entry.rect.bottom,
+            )
         };
 
         unsafe {
@@ -541,7 +562,11 @@ impl AppState {
             if in_hot || in_overlay || has_capture {
                 peek.leave_ticks = 0;
                 if !has_capture {
-                    overlay::update_peek_overlay(peek.overlay_hwnd, peek.target_hwnd, &self.windows);
+                    overlay::update_peek_overlay(
+                        peek.overlay_hwnd,
+                        peek.target_hwnd,
+                        &self.windows,
+                    );
                 }
                 self.peek = Some(peek);
             } else {
@@ -593,7 +618,12 @@ impl AppState {
         }
 
         // Use WindowFromPoint for z-order-aware fallback
-        let hit = unsafe { WindowFromPoint(POINT { x: cursor.x, y: cursor.y }) };
+        let hit = unsafe {
+            WindowFromPoint(POINT {
+                x: cursor.x,
+                y: cursor.y,
+            })
+        };
         if hit.is_null() {
             return None;
         }
