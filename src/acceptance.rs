@@ -3338,3 +3338,144 @@ fn acceptance_e2e_tab_preview() {
     drop(child.stdin.take());
     let _ = child.wait();
 }
+
+/// Regression test: clicking a tab should switch tabs without hiding the overlay.
+///
+/// Reproduces the full click path:
+/// 1. on_mouse_up calls group.switch_to(tab) + overlay::update_overlay
+/// 2. EVENT_SYSTEM_FOREGROUND hook fires on_focus_changed(new_active_hwnd)
+///
+/// The bug: after step 2, sync_desktop_visibility() inside on_focus_changed
+/// queries IsWindowOnCurrentVirtualDesktop for the newly-activated window.
+/// The COM API can return false for a window that was just ShowWindow'd from
+/// a hidden state, causing the overlay to be incorrectly hidden.
+#[test]
+fn acceptance_tab_click_keeps_overlay_visible() {
+    overlay::register_class();
+    let test_class = register_test_class();
+
+    let win1 = create_test_window(&test_class, "TabClick A");
+    let win2 = create_test_window(&test_class, "TabClick B");
+    assert!(!win1.is_null(), "Failed to create win1");
+    assert!(!win2.is_null(), "Failed to create win2");
+
+    state::with_state(|s| {
+        s.windows.insert(win1, make_window_info(win1));
+        s.windows.insert(win2, make_window_info(win2));
+        // Initialize VDesktopManager so sync_desktop_visibility() runs its logic
+        s.vdesktop = crate::vdesktop::VDesktopManager::new();
+    });
+
+    pump_messages(Duration::from_millis(200));
+
+    // Create group: win1 + win2, win2 is active (index 1)
+    let group_id = state::with_state(|s| {
+        let gid = s.groups.create_group(win1, win2);
+        let ov = s.overlays.ensure_overlay(gid);
+        overlay::update_overlay(ov, gid, &s.groups, &s.windows);
+        gid
+    });
+
+    pump_messages(Duration::from_millis(200));
+
+    // Verify overlay is visible before click
+    let ov_hwnd = state::with_state(|s| {
+        *s.overlays.overlays.get(&group_id).expect("Overlay must exist")
+    });
+    unsafe {
+        assert_ne!(IsWindowVisible(ov_hwnd), 0, "Overlay should be visible before click");
+    }
+
+    // --- Simulate tab click on tab 0 (win1) ---
+    // Step 1: What on_mouse_up does for a non-drag click
+    state::with_state(|s| {
+        if let Some(group) = s.groups.groups.get_mut(&group_id) {
+            group.switch_to(0);
+        }
+        if let Some(&ov) = s.overlays.overlays.get(&group_id) {
+            overlay::update_overlay(ov, group_id, &s.groups, &s.windows);
+        }
+    });
+
+    pump_messages(Duration::from_millis(100));
+
+    // Verify win1 is now active and visible
+    unsafe {
+        assert_ne!(IsWindowVisible(win1), 0, "win1 should be visible after switch");
+        assert_eq!(IsWindowVisible(win2), 0, "win2 should be hidden after switch");
+    }
+
+    // Step 2: Simulate EVENT_SYSTEM_FOREGROUND hook → on_focus_changed(win1)
+    // This is what fires after SetForegroundWindow(new) inside switch_to()
+    //
+    // Simulate the COM quirk: IsWindowOnCurrentVirtualDesktop can return false
+    // for a window that was just shown from hidden state. Set win1 (the just-
+    // activated window) as off-desktop in the mock to reproduce this.
+    state::with_state(|s| {
+        if let Some(ref mut vd) = s.vdesktop {
+            vd.set_off_desktop(&[win1]);
+        }
+    });
+    state::with_state(|s| {
+        s.on_focus_changed(win1);
+    });
+    // Clear mock after the focus change so cleanup works normally
+    state::with_state(|s| {
+        if let Some(ref mut vd) = s.vdesktop {
+            vd.clear_mock();
+        }
+    });
+
+    pump_messages(Duration::from_millis(100));
+
+    // Screenshot evidence
+    screenshot::capture_window(win1, "evidence/tab_click_overlay/01_after_click.png");
+
+    // --- ASSERTIONS: overlay must still be visible ---
+    unsafe {
+        assert_ne!(
+            IsWindowVisible(ov_hwnd),
+            0,
+            "BUG: Overlay hidden after tab click + focus change"
+        );
+    }
+
+    // Active window should still be visible
+    unsafe {
+        assert_ne!(
+            IsWindowVisible(win1),
+            0,
+            "BUG: Active window (win1) hidden after focus change"
+        );
+        assert_eq!(
+            IsWindowVisible(win2),
+            0,
+            "win2 should remain hidden"
+        );
+    }
+
+    // Group state should be intact
+    state::with_state(|s| {
+        let group = s.groups.groups.get(&group_id).expect("Group should still exist");
+        assert_eq!(group.active, 0, "Active tab should be 0 (win1)");
+        assert_eq!(group.tabs.len(), 2, "Group should still have 2 tabs");
+        assert!(
+            !s.overlays.desktop_hidden.contains(&group_id),
+            "BUG: Group marked as desktop_hidden after tab click"
+        );
+    });
+
+    // Cleanup
+    state::with_state(|s| {
+        s.groups.remove_from_group(win1);
+        s.groups.remove_from_group(win2);
+        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows);
+        s.windows.remove(&win1);
+        s.windows.remove(&win2);
+        s.shutdown();
+    });
+    unsafe {
+        DestroyWindow(win1);
+        DestroyWindow(win2);
+    }
+}

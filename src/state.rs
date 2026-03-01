@@ -144,7 +144,7 @@ impl AppState {
     /// Check virtual desktop state for all groups and hide/show overlays
     /// as needed.  Called from on_focus_changed() as a reliable fallback
     /// since EVENT_SYSTEM_DESKTOPSWITCH may not arrive via the hook.
-    fn sync_desktop_visibility(&mut self) {
+    fn sync_desktop_visibility(&mut self, focused_hwnd: HWND) {
         let vd = match &self.vdesktop {
             Some(vd) => vd,
             None => return,
@@ -161,7 +161,14 @@ impl AppState {
             .collect();
 
         for (gid, ov, active_hwnd) in group_info {
-            let on_current = vd.is_on_current_desktop(active_hwnd);
+            // The foreground window is always on the current desktop.
+            // Trust this over COM which can return stale results for
+            // windows recently shown from a hidden state (tab switch).
+            let on_current = if active_hwnd == focused_hwnd {
+                true
+            } else {
+                vd.is_on_current_desktop(active_hwnd)
+            };
             let was_hidden = self.overlays.desktop_hidden.contains(&gid);
 
             if on_current && was_hidden {
@@ -302,7 +309,7 @@ impl AppState {
         // SetWinEventHook(WINEVENT_OUTOFCONTEXT), but foreground events
         // always fire when the user switches virtual desktops.  Re-check
         // desktop visibility here so overlays are hidden/shown promptly.
-        self.sync_desktop_visibility();
+        self.sync_desktop_visibility(hwnd);
 
         if let Some(gid) = self.groups.group_of(hwnd) {
             if let Some(group) = self.groups.groups.get_mut(&gid) {
