@@ -1,3 +1,10 @@
+# Bugs
+- [ ] Tabs remain visible when switching virtual desktops (desktop-switch bug)
+
+
+
+
+
 # WinTab Release Milestones
 
 > MVP (M1 + M2) is complete: core tab engine, window grouping, drag-and-drop, peek.
