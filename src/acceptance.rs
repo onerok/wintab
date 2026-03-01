@@ -2264,3 +2264,307 @@ fn acceptance_rules_e2e_auto_group() {
     drop(child.stdin.take());
     let _ = child.wait();
 }
+
+/// E2E test: group lifecycle with real separate-process windows.
+/// Spawns dummy_window.exe, discovers windows via enumerate_windows(),
+/// creates group, verifies overlay, switches tabs, ungroups — with screenshot evidence.
+#[test]
+fn acceptance_e2e_group_lifecycle() {
+    // Phase 0: Spawn dummy process
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let dummy_path = std::path::Path::new(manifest_dir)
+        .join("target")
+        .join("debug")
+        .join("dummy_window.exe");
+    assert!(
+        dummy_path.exists(),
+        "dummy_window.exe not found at {:?}. Run `cargo build --bin dummy_window` first.",
+        dummy_path
+    );
+
+    let mut child = Command::new(&dummy_path)
+        .args(["2", "E2ELifecycle"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .expect("Failed to spawn dummy_window.exe");
+
+    let child_pid = child.id();
+
+    // Phase 1: Discover windows via enumerate_windows (real is_eligible path)
+    overlay::register_class();
+
+    let mut discovered: Vec<WindowInfo> = Vec::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        pump_messages(Duration::from_millis(200));
+        discovered = window::enumerate_windows()
+            .into_iter()
+            .filter(|info| {
+                let mut pid = 0u32;
+                unsafe {
+                    GetWindowThreadProcessId(info.hwnd, &mut pid);
+                }
+                pid == child_pid
+            })
+            .collect();
+        if discovered.len() >= 2 {
+            break;
+        }
+    }
+
+    assert_eq!(
+        discovered.len(),
+        2,
+        "Expected 2 windows from dummy process (PID {}), got {}",
+        child_pid,
+        discovered.len()
+    );
+
+    let win1 = discovered[0].hwnd;
+    let win2 = discovered[1].hwnd;
+
+    // Insert into state
+    state::with_state(|s| {
+        for info in &discovered {
+            s.windows.insert(info.hwnd, info.clone());
+        }
+    });
+
+    // Phase 2: Create group and verify overlay
+    let group_id = state::with_state(|s| {
+        let gid = s.groups.create_group(win1, win2);
+        let ov = s.overlays.ensure_overlay(gid);
+        overlay::update_overlay(ov, gid, &s.groups, &s.windows);
+        gid
+    });
+
+    pump_messages(Duration::from_millis(200));
+
+    let ov_hwnd = state::with_state(|s| {
+        *s.overlays.overlays.get(&group_id).expect("Overlay not found")
+    });
+    unsafe {
+        assert_ne!(IsWindowVisible(ov_hwnd), 0, "Overlay not visible after grouping");
+    }
+
+    // Screenshot 01: group created with overlay
+    screenshot::capture_window(win2, "evidence/e2e_group_lifecycle/01_group_created.png");
+
+    // Verify group has 2 tabs with win2 active
+    state::with_state(|s| {
+        let group = s.groups.groups.get(&group_id).expect("Group not found");
+        assert_eq!(group.tabs.len(), 2, "Group should have 2 tabs");
+        assert_eq!(group.active, 1, "win2 should be active (index 1)");
+    });
+
+    // Phase 3: Switch to tab 0 (win1)
+    state::with_state(|s| {
+        let group = s.groups.groups.get_mut(&group_id).unwrap();
+        group.switch_to(0);
+    });
+
+    pump_messages(Duration::from_millis(200));
+
+    unsafe {
+        assert_ne!(IsWindowVisible(win1), 0, "win1 should be visible after switch");
+        assert_eq!(IsWindowVisible(win2), 0, "win2 should be hidden after switch");
+    }
+
+    // Update overlay after switch
+    state::with_state(|s| {
+        let ov = *s.overlays.overlays.get(&group_id).unwrap();
+        overlay::update_overlay(ov, group_id, &s.groups, &s.windows);
+    });
+
+    pump_messages(Duration::from_millis(100));
+
+    // Screenshot 02: tab switched
+    screenshot::capture_window(win1, "evidence/e2e_group_lifecycle/02_tab_switched.png");
+
+    // Phase 4: Ungroup
+    state::with_state(|s| {
+        s.groups.remove_from_group(win1);
+        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows);
+    });
+
+    pump_messages(Duration::from_millis(200));
+
+    // Both windows should be visible (ungrouped)
+    unsafe {
+        assert_ne!(IsWindowVisible(win1), 0, "win1 should be visible after ungroup");
+        assert_ne!(IsWindowVisible(win2), 0, "win2 should be visible after ungroup");
+    }
+
+    // No group references remain
+    state::with_state(|s| {
+        assert!(s.groups.group_of(win1).is_none(), "win1 still in a group");
+        assert!(s.groups.group_of(win2).is_none(), "win2 still in a group");
+        assert!(!s.groups.groups.contains_key(&group_id), "Group still exists");
+    });
+
+    // Overlay destroyed
+    state::with_state(|s| {
+        assert!(
+            !s.overlays.overlays.contains_key(&group_id),
+            "Overlay should be removed after ungroup"
+        );
+    });
+    unsafe {
+        assert_eq!(IsWindow(ov_hwnd), 0, "Overlay window should be destroyed");
+    }
+
+    // Screenshot 03: ungrouped
+    screenshot::capture_window(win1, "evidence/e2e_group_lifecycle/03_ungrouped.png");
+
+    // Cleanup
+    state::with_state(|s| {
+        s.windows.clear();
+        s.shutdown();
+    });
+
+    drop(child.stdin.take());
+    let _ = child.wait();
+}
+
+/// E2E test: minimize/restore with real separate-process windows.
+/// Spawns dummy_window.exe, discovers windows, creates group,
+/// minimizes active window → overlay hides, restores → overlay reappears.
+#[test]
+fn acceptance_e2e_minimize_restore() {
+    // Phase 0: Spawn dummy process
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let dummy_path = std::path::Path::new(manifest_dir)
+        .join("target")
+        .join("debug")
+        .join("dummy_window.exe");
+    assert!(
+        dummy_path.exists(),
+        "dummy_window.exe not found at {:?}. Run `cargo build --bin dummy_window` first.",
+        dummy_path
+    );
+
+    let mut child = Command::new(&dummy_path)
+        .args(["2", "E2EMinRestore"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .expect("Failed to spawn dummy_window.exe");
+
+    let child_pid = child.id();
+
+    // Phase 1: Discover windows
+    overlay::register_class();
+
+    let mut discovered: Vec<WindowInfo> = Vec::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        pump_messages(Duration::from_millis(200));
+        discovered = window::enumerate_windows()
+            .into_iter()
+            .filter(|info| {
+                let mut pid = 0u32;
+                unsafe {
+                    GetWindowThreadProcessId(info.hwnd, &mut pid);
+                }
+                pid == child_pid
+            })
+            .collect();
+        if discovered.len() >= 2 {
+            break;
+        }
+    }
+
+    assert_eq!(
+        discovered.len(),
+        2,
+        "Expected 2 windows from dummy process (PID {}), got {}",
+        child_pid,
+        discovered.len()
+    );
+
+    let win1 = discovered[0].hwnd;
+    let win2 = discovered[1].hwnd;
+
+    state::with_state(|s| {
+        for info in &discovered {
+            s.windows.insert(info.hwnd, info.clone());
+        }
+    });
+
+    // Phase 2: Create group (win2 active at index 1)
+    let group_id = state::with_state(|s| {
+        let gid = s.groups.create_group(win1, win2);
+        let ov = s.overlays.ensure_overlay(gid);
+        overlay::update_overlay(ov, gid, &s.groups, &s.windows);
+        gid
+    });
+
+    pump_messages(Duration::from_millis(200));
+
+    let ov_hwnd = state::with_state(|s| {
+        *s.overlays.overlays.get(&group_id).unwrap()
+    });
+
+    // Verify overlay visible
+    unsafe {
+        assert_ne!(
+            IsWindowVisible(ov_hwnd),
+            0,
+            "Overlay should be visible before minimize"
+        );
+    }
+
+    // Screenshot 01: group created, overlay visible
+    screenshot::capture_window(win2, "evidence/e2e_minimize_restore/01_grouped.png");
+
+    // Phase 3: Minimize active window
+    state::with_state(|s| {
+        s.on_minimize(win2);
+    });
+
+    pump_messages(Duration::from_millis(200));
+
+    // Overlay should be hidden
+    unsafe {
+        assert_eq!(
+            IsWindowVisible(ov_hwnd),
+            0,
+            "Overlay should be hidden after minimize"
+        );
+    }
+
+    // Screenshot 02: minimized
+    screenshot::capture_window(win2, "evidence/e2e_minimize_restore/02_minimized.png");
+
+    // Phase 4: Restore
+    state::with_state(|s| {
+        s.on_restore(win2);
+    });
+
+    pump_messages(Duration::from_millis(200));
+
+    // Overlay should be visible again
+    unsafe {
+        assert_ne!(
+            IsWindowVisible(ov_hwnd),
+            0,
+            "Overlay should be visible after restore"
+        );
+    }
+
+    // Screenshot 03: restored
+    screenshot::capture_window(win2, "evidence/e2e_minimize_restore/03_restored.png");
+
+    // Cleanup
+    state::with_state(|s| {
+        s.groups.remove_from_group(win1);
+        s.groups.remove_from_group(win2);
+        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows);
+        s.windows.clear();
+        s.shutdown();
+    });
+
+    drop(child.stdin.take());
+    let _ = child.wait();
+}

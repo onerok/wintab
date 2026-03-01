@@ -48,10 +48,15 @@ install:
 uninstall:
     cargo uninstall wintab
 
-# run E2E acceptance test with dummy process
+# run all E2E acceptance tests with dummy process + generate HTML report
 test-e2e:
     cargo build --bin dummy_window
-    cargo test acceptance_rules_e2e -- --test-threads=1 --nocapture
+    mkdir -p evidence
+    cargo test acceptance_group_lifecycle -- --test-threads=1 --nocapture 2>&1 | tee evidence/test-results.txt || true
+    cargo test acceptance_minimize_restore_group -- --test-threads=1 --nocapture 2>&1 | tee -a evidence/test-results.txt || true
+    cargo test acceptance_e2e -- --test-threads=1 --nocapture 2>&1 | tee -a evidence/test-results.txt || true
+    cargo test acceptance_rules_e2e -- --test-threads=1 --nocapture 2>&1 | tee -a evidence/test-results.txt || true
+    bash scripts/e2e-report.sh
 
 # clean build artifacts
 clean:
