@@ -3415,12 +3415,7 @@ fn acceptance_tab_click_keeps_overlay_visible() {
         if let Some(ref mut vd) = s.vdesktop {
             vd.set_off_desktop(&[win1]);
         }
-    });
-    state::with_state(|s| {
         s.on_focus_changed(win1);
-    });
-    // Clear mock after the focus change so cleanup works normally
-    state::with_state(|s| {
         if let Some(ref mut vd) = s.vdesktop {
             vd.clear_mock();
         }
