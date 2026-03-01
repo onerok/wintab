@@ -126,10 +126,10 @@ fn acceptance_group_lifecycle() {
     pump_messages(Duration::from_millis(200));
 
     // 8. Assert overlay exists and is visible
-    let overlay_class: Vec<u16> = "WinTabOverlay\0".encode_utf16().collect();
+    let ov_hwnd = state::with_state(|s| {
+        *s.overlays.overlays.get(&group_id).expect("Overlay not found in state")
+    });
     unsafe {
-        let ov_hwnd = FindWindowExW(0 as _, 0 as _, overlay_class.as_ptr(), ptr::null());
-        assert!(!ov_hwnd.is_null(), "Overlay window not found");
         assert_ne!(IsWindowVisible(ov_hwnd), 0, "Overlay not visible");
 
         // Overlay should be positioned near the active window's top edge
@@ -207,11 +207,17 @@ fn acceptance_group_lifecycle() {
     });
 
     // 15. Assert overlay destroyed
-    unsafe {
-        let ov_hwnd = FindWindowExW(0 as _, 0 as _, overlay_class.as_ptr(), ptr::null());
+    state::with_state(|s| {
         assert!(
-            ov_hwnd.is_null(),
-            "Overlay should be destroyed after ungroup"
+            !s.overlays.overlays.contains_key(&group_id),
+            "Overlay should be removed from state after ungroup"
+        );
+    });
+    unsafe {
+        assert_eq!(
+            IsWindow(ov_hwnd),
+            0,
+            "Overlay window should be destroyed after ungroup"
         );
     }
 
@@ -762,6 +768,515 @@ fn acceptance_ungroup_then_peek() {
     // Cleanup
     state::with_state(|s| {
         s.hide_peek();
+        s.windows.remove(&win1);
+        s.windows.remove(&win2);
+        s.shutdown();
+    });
+    unsafe {
+        DestroyWindow(win1);
+        DestroyWindow(win2);
+    }
+}
+
+/// Test: minimizing the active window hides the overlay; restoring shows it.
+#[test]
+fn acceptance_minimize_restore_group() {
+    overlay::register_class();
+    let test_class = register_test_class();
+
+    let win1 = create_test_window(&test_class, "MinRestore A");
+    let win2 = create_test_window(&test_class, "MinRestore B");
+    assert!(!win1.is_null());
+    assert!(!win2.is_null());
+
+    state::with_state(|s| {
+        s.windows.insert(win1, make_window_info(win1));
+        s.windows.insert(win2, make_window_info(win2));
+    });
+
+    pump_messages(Duration::from_millis(200));
+
+    // Create group and overlay (win2 is active at index 1)
+    let group_id = state::with_state(|s| {
+        let gid = s.groups.create_group(win1, win2);
+        let ov = s.overlays.ensure_overlay(gid);
+        overlay::update_overlay(ov, gid, &s.groups, &s.windows);
+        gid
+    });
+
+    pump_messages(Duration::from_millis(200));
+
+    // Get overlay HWND
+    let ov_hwnd = state::with_state(|s| {
+        *s.overlays.overlays.get(&group_id).unwrap()
+    });
+
+    // Verify overlay is visible
+    unsafe {
+        assert_ne!(
+            IsWindowVisible(ov_hwnd),
+            0,
+            "Overlay should be visible before minimize"
+        );
+    }
+
+    // Minimize active window via state handler
+    state::with_state(|s| {
+        s.on_minimize(win2);
+    });
+
+    pump_messages(Duration::from_millis(100));
+
+    // Verify overlay is hidden after minimize
+    unsafe {
+        assert_eq!(
+            IsWindowVisible(ov_hwnd),
+            0,
+            "Overlay should be hidden after minimize"
+        );
+    }
+
+    // Restore via state handler
+    state::with_state(|s| {
+        s.on_restore(win2);
+    });
+
+    pump_messages(Duration::from_millis(100));
+
+    // Verify overlay is visible again
+    unsafe {
+        assert_ne!(
+            IsWindowVisible(ov_hwnd),
+            0,
+            "Overlay should be visible after restore"
+        );
+    }
+
+    // Cleanup
+    state::with_state(|s| {
+        s.groups.remove_from_group(win1);
+        s.groups.remove_from_group(win2);
+        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows);
+        s.windows.remove(&win1);
+        s.windows.remove(&win2);
+        s.shutdown();
+    });
+    unsafe {
+        DestroyWindow(win1);
+        DestroyWindow(win2);
+    }
+}
+
+/// Test: destroying a window in a 2-tab group dissolves the group.
+#[test]
+fn acceptance_window_destroyed_dissolves_group() {
+    overlay::register_class();
+    let test_class = register_test_class();
+
+    let win1 = create_test_window(&test_class, "Destroy A");
+    let win2 = create_test_window(&test_class, "Destroy B");
+    assert!(!win1.is_null());
+    assert!(!win2.is_null());
+
+    state::with_state(|s| {
+        s.windows.insert(win1, make_window_info(win1));
+        s.windows.insert(win2, make_window_info(win2));
+    });
+
+    pump_messages(Duration::from_millis(200));
+
+    // Create group
+    let group_id = state::with_state(|s| {
+        let gid = s.groups.create_group(win1, win2);
+        s.overlays.ensure_overlay(gid);
+        gid
+    });
+
+    // Verify group exists
+    state::with_state(|s| {
+        assert!(s.groups.groups.contains_key(&group_id));
+        assert_eq!(s.groups.group_of(win1), Some(group_id));
+        assert_eq!(s.groups.group_of(win2), Some(group_id));
+    });
+
+    // Simulate window destruction
+    state::with_state(|s| {
+        s.on_window_destroyed(win1);
+    });
+
+    pump_messages(Duration::from_millis(100));
+
+    // Group should be dissolved (was 2-tab, lost one)
+    state::with_state(|s| {
+        assert!(
+            s.groups.group_of(win1).is_none(),
+            "win1 should not be in any group after destroy"
+        );
+        assert!(
+            s.groups.group_of(win2).is_none(),
+            "win2 should be ungrouped after 2-tab group dissolves"
+        );
+        assert!(
+            !s.groups.groups.contains_key(&group_id),
+            "Group should not exist after dissolve"
+        );
+        assert!(
+            !s.windows.contains_key(&win1),
+            "win1 should be removed from tracked windows"
+        );
+    });
+
+    // win2 should be visible (restored from hidden)
+    unsafe {
+        assert_ne!(
+            IsWindowVisible(win2),
+            0,
+            "win2 should be visible after group dissolves"
+        );
+    }
+
+    // Cleanup
+    state::with_state(|s| {
+        s.windows.remove(&win2);
+        s.shutdown();
+    });
+    unsafe {
+        DestroyWindow(win1);
+        DestroyWindow(win2);
+    }
+}
+
+/// Test: changing a window title updates the tracked state.
+#[test]
+fn acceptance_title_change_updates_state() {
+    let test_class = register_test_class();
+
+    let win1 = create_test_window(&test_class, "Original Title");
+    assert!(!win1.is_null());
+
+    state::with_state(|s| {
+        s.windows.insert(win1, make_window_info(win1));
+    });
+
+    pump_messages(Duration::from_millis(200));
+
+    // Verify original title
+    state::with_state(|s| {
+        assert_eq!(
+            s.windows.get(&win1).unwrap().title,
+            "Original Title"
+        );
+    });
+
+    // Change the title
+    let new_title: Vec<u16> = "Updated Title\0".encode_utf16().collect();
+    unsafe {
+        SetWindowTextW(win1, new_title.as_ptr());
+    }
+
+    // Notify state of title change
+    state::with_state(|s| {
+        s.on_title_changed(win1);
+    });
+
+    // Verify updated title
+    state::with_state(|s| {
+        assert_eq!(
+            s.windows.get(&win1).unwrap().title,
+            "Updated Title"
+        );
+    });
+
+    // Cleanup
+    state::with_state(|s| {
+        s.windows.remove(&win1);
+        s.shutdown();
+    });
+    unsafe {
+        DestroyWindow(win1);
+    }
+}
+
+/// Test: switching through all tabs in a 3-tab group tracks active correctly.
+#[test]
+fn acceptance_switch_through_all_tabs() {
+    overlay::register_class();
+    let test_class = register_test_class();
+
+    let win1 = create_test_window(&test_class, "Switch A");
+    let win2 = create_test_window(&test_class, "Switch B");
+    let win3 = create_test_window(&test_class, "Switch C");
+    assert!(!win1.is_null());
+    assert!(!win2.is_null());
+    assert!(!win3.is_null());
+
+    state::with_state(|s| {
+        s.windows.insert(win1, make_window_info(win1));
+        s.windows.insert(win2, make_window_info(win2));
+        s.windows.insert(win3, make_window_info(win3));
+    });
+
+    pump_messages(Duration::from_millis(200));
+
+    // Create 3-tab group
+    let group_id = state::with_state(|s| {
+        let gid = s.groups.create_group(win1, win2);
+        s.groups.add_to_group(gid, win3);
+        let ov = s.overlays.ensure_overlay(gid);
+        overlay::update_overlay(ov, gid, &s.groups, &s.windows);
+        gid
+    });
+
+    pump_messages(Duration::from_millis(100));
+
+    // win3 should be active (last added)
+    state::with_state(|s| {
+        let group = s.groups.groups.get(&group_id).unwrap();
+        assert_eq!(group.active, 2);
+        assert_eq!(group.active_hwnd(), win3);
+    });
+
+    // Switch to tab 0 (win1)
+    state::with_state(|s| {
+        let group = s.groups.groups.get_mut(&group_id).unwrap();
+        group.switch_to(0);
+    });
+    pump_messages(Duration::from_millis(50));
+
+    state::with_state(|s| {
+        let group = s.groups.groups.get(&group_id).unwrap();
+        assert_eq!(group.active, 0);
+        assert_eq!(group.active_hwnd(), win1);
+    });
+    unsafe {
+        assert_ne!(IsWindowVisible(win1), 0, "win1 should be visible");
+        assert_eq!(IsWindowVisible(win2), 0, "win2 should be hidden");
+        assert_eq!(IsWindowVisible(win3), 0, "win3 should be hidden");
+    }
+
+    // Switch to tab 1 (win2)
+    state::with_state(|s| {
+        let group = s.groups.groups.get_mut(&group_id).unwrap();
+        group.switch_to(1);
+    });
+    pump_messages(Duration::from_millis(50));
+
+    state::with_state(|s| {
+        let group = s.groups.groups.get(&group_id).unwrap();
+        assert_eq!(group.active, 1);
+        assert_eq!(group.active_hwnd(), win2);
+    });
+    unsafe {
+        assert_eq!(IsWindowVisible(win1), 0, "win1 should be hidden");
+        assert_ne!(IsWindowVisible(win2), 0, "win2 should be visible");
+        assert_eq!(IsWindowVisible(win3), 0, "win3 should be hidden");
+    }
+
+    // Switch to tab 2 (win3)
+    state::with_state(|s| {
+        let group = s.groups.groups.get_mut(&group_id).unwrap();
+        group.switch_to(2);
+    });
+    pump_messages(Duration::from_millis(50));
+
+    state::with_state(|s| {
+        let group = s.groups.groups.get(&group_id).unwrap();
+        assert_eq!(group.active, 2);
+        assert_eq!(group.active_hwnd(), win3);
+    });
+
+    // Cleanup
+    state::with_state(|s| {
+        s.groups.remove_from_group(win1);
+        s.groups.remove_from_group(win2);
+        s.groups.remove_from_group(win3);
+        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows);
+        s.windows.remove(&win1);
+        s.windows.remove(&win2);
+        s.windows.remove(&win3);
+        s.shutdown();
+    });
+    unsafe {
+        DestroyWindow(win1);
+        DestroyWindow(win2);
+        DestroyWindow(win3);
+    }
+}
+
+/// Test: two independent groups don't interfere with each other.
+#[test]
+fn acceptance_multiple_independent_groups() {
+    overlay::register_class();
+    let test_class = register_test_class();
+
+    let win_a1 = create_test_window(&test_class, "GroupA 1");
+    let win_a2 = create_test_window(&test_class, "GroupA 2");
+    let win_b1 = create_test_window(&test_class, "GroupB 1");
+    let win_b2 = create_test_window(&test_class, "GroupB 2");
+    assert!(!win_a1.is_null());
+    assert!(!win_a2.is_null());
+    assert!(!win_b1.is_null());
+    assert!(!win_b2.is_null());
+
+    state::with_state(|s| {
+        s.windows.insert(win_a1, make_window_info(win_a1));
+        s.windows.insert(win_a2, make_window_info(win_a2));
+        s.windows.insert(win_b1, make_window_info(win_b1));
+        s.windows.insert(win_b2, make_window_info(win_b2));
+    });
+
+    pump_messages(Duration::from_millis(200));
+
+    // Create two independent groups
+    let (gid_a, gid_b) = state::with_state(|s| {
+        let ga = s.groups.create_group(win_a1, win_a2);
+        let gb = s.groups.create_group(win_b1, win_b2);
+        s.overlays.ensure_overlay(ga);
+        s.overlays.ensure_overlay(gb);
+        (ga, gb)
+    });
+
+    pump_messages(Duration::from_millis(100));
+
+    // Verify independent tracking
+    state::with_state(|s| {
+        assert_eq!(s.groups.group_of(win_a1), Some(gid_a));
+        assert_eq!(s.groups.group_of(win_a2), Some(gid_a));
+        assert_eq!(s.groups.group_of(win_b1), Some(gid_b));
+        assert_eq!(s.groups.group_of(win_b2), Some(gid_b));
+        assert_ne!(gid_a, gid_b);
+    });
+
+    // Switch tab in group A — group B should be unaffected
+    state::with_state(|s| {
+        let group_a = s.groups.groups.get_mut(&gid_a).unwrap();
+        group_a.switch_to(0);
+    });
+
+    pump_messages(Duration::from_millis(50));
+
+    state::with_state(|s| {
+        let group_a = s.groups.groups.get(&gid_a).unwrap();
+        assert_eq!(group_a.active, 0, "Group A active should be 0");
+
+        let group_b = s.groups.groups.get(&gid_b).unwrap();
+        assert_eq!(group_b.active, 1, "Group B active should still be 1");
+    });
+
+    // Dissolve group A — group B should survive
+    state::with_state(|s| {
+        s.groups.remove_from_group(win_a1);
+        s.overlays.refresh_overlay(gid_a, &s.groups, &s.windows);
+    });
+
+    pump_messages(Duration::from_millis(50));
+
+    state::with_state(|s| {
+        assert!(s.groups.group_of(win_a1).is_none());
+        assert!(s.groups.group_of(win_a2).is_none());
+        assert!(!s.groups.groups.contains_key(&gid_a), "Group A dissolved");
+
+        assert_eq!(s.groups.group_of(win_b1), Some(gid_b));
+        assert_eq!(s.groups.group_of(win_b2), Some(gid_b));
+        assert!(s.groups.groups.contains_key(&gid_b), "Group B still exists");
+    });
+
+    // Cleanup
+    state::with_state(|s| {
+        s.groups.remove_from_group(win_b1);
+        s.groups.remove_from_group(win_b2);
+        s.overlays.refresh_overlay(gid_b, &s.groups, &s.windows);
+        s.windows.remove(&win_a1);
+        s.windows.remove(&win_a2);
+        s.windows.remove(&win_b1);
+        s.windows.remove(&win_b2);
+        s.shutdown();
+    });
+    unsafe {
+        DestroyWindow(win_a1);
+        DestroyWindow(win_a2);
+        DestroyWindow(win_b1);
+        DestroyWindow(win_b2);
+    }
+}
+
+/// Test: toggling enabled hides all overlays; toggling back shows them.
+#[test]
+fn acceptance_toggle_enabled() {
+    overlay::register_class();
+    let test_class = register_test_class();
+
+    let win1 = create_test_window(&test_class, "Toggle A");
+    let win2 = create_test_window(&test_class, "Toggle B");
+    assert!(!win1.is_null());
+    assert!(!win2.is_null());
+
+    state::with_state(|s| {
+        s.windows.insert(win1, make_window_info(win1));
+        s.windows.insert(win2, make_window_info(win2));
+    });
+
+    pump_messages(Duration::from_millis(200));
+
+    // Create group with overlay
+    let group_id = state::with_state(|s| {
+        let gid = s.groups.create_group(win1, win2);
+        let ov = s.overlays.ensure_overlay(gid);
+        overlay::update_overlay(ov, gid, &s.groups, &s.windows);
+        gid
+    });
+
+    pump_messages(Duration::from_millis(200));
+
+    let ov_hwnd = state::with_state(|s| {
+        *s.overlays.overlays.get(&group_id).unwrap()
+    });
+
+    // Verify initially enabled
+    state::with_state(|s| {
+        assert!(s.enabled);
+    });
+    unsafe {
+        assert_ne!(IsWindowVisible(ov_hwnd), 0, "Overlay visible when enabled");
+    }
+
+    // Toggle off
+    state::with_state(|s| {
+        s.toggle_enabled();
+        assert!(!s.enabled);
+    });
+
+    pump_messages(Duration::from_millis(100));
+
+    unsafe {
+        assert_eq!(
+            IsWindowVisible(ov_hwnd),
+            0,
+            "Overlay should be hidden when disabled"
+        );
+    }
+
+    // Toggle back on
+    state::with_state(|s| {
+        s.toggle_enabled();
+        assert!(s.enabled);
+    });
+
+    pump_messages(Duration::from_millis(100));
+
+    unsafe {
+        assert_ne!(
+            IsWindowVisible(ov_hwnd),
+            0,
+            "Overlay should be visible when re-enabled"
+        );
+    }
+
+    // Cleanup
+    state::with_state(|s| {
+        s.groups.remove_from_group(win1);
+        s.groups.remove_from_group(win2);
+        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows);
         s.windows.remove(&win1);
         s.windows.remove(&win2);
         s.shutdown();

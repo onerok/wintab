@@ -388,4 +388,194 @@ mod tests {
         let mut gm = GroupManager::new();
         gm.remove_from_group(fake_hwnd(999)); // should not panic
     }
+
+    // --- TabGroup::remove (index adjustment logic) ---
+    // Note: Win32 calls (ShowWindow, SetForegroundWindow) on fake HWNDs
+    // return failure silently; we're testing the state logic only.
+
+    #[test]
+    fn remove_after_active_preserves_index() {
+        let mut group = TabGroup {
+            id: 1,
+            tabs: vec![fake_hwnd(100), fake_hwnd(200), fake_hwnd(300)],
+            active: 0,
+        };
+        let dissolve = group.remove(fake_hwnd(300));
+        assert!(!dissolve);
+        assert_eq!(group.tabs, vec![fake_hwnd(100), fake_hwnd(200)]);
+        assert_eq!(group.active, 0);
+    }
+
+    #[test]
+    fn remove_before_active_decrements_index() {
+        let mut group = TabGroup {
+            id: 1,
+            tabs: vec![fake_hwnd(100), fake_hwnd(200), fake_hwnd(300)],
+            active: 2,
+        };
+        let dissolve = group.remove(fake_hwnd(100));
+        assert!(!dissolve);
+        assert_eq!(group.tabs, vec![fake_hwnd(200), fake_hwnd(300)]);
+        assert_eq!(group.active, 1);
+    }
+
+    #[test]
+    fn remove_active_selects_successor() {
+        let mut group = TabGroup {
+            id: 1,
+            tabs: vec![fake_hwnd(100), fake_hwnd(200), fake_hwnd(300)],
+            active: 1,
+        };
+        let dissolve = group.remove(fake_hwnd(200));
+        assert!(!dissolve);
+        assert_eq!(group.tabs, vec![fake_hwnd(100), fake_hwnd(300)]);
+        assert_eq!(group.active, 1);
+        assert_eq!(group.active_hwnd(), fake_hwnd(300));
+    }
+
+    #[test]
+    fn remove_active_at_end_clamps() {
+        let mut group = TabGroup {
+            id: 1,
+            tabs: vec![fake_hwnd(100), fake_hwnd(200), fake_hwnd(300)],
+            active: 2,
+        };
+        let dissolve = group.remove(fake_hwnd(300));
+        assert!(!dissolve);
+        assert_eq!(group.tabs, vec![fake_hwnd(100), fake_hwnd(200)]);
+        assert_eq!(group.active, 1);
+    }
+
+    #[test]
+    fn remove_dissolves_two_tab_group() {
+        let mut group = TabGroup {
+            id: 1,
+            tabs: vec![fake_hwnd(100), fake_hwnd(200)],
+            active: 0,
+        };
+        let dissolve = group.remove(fake_hwnd(100));
+        assert!(dissolve);
+        assert_eq!(group.tabs, vec![fake_hwnd(200)]);
+    }
+
+    #[test]
+    fn remove_nonexistent_is_noop() {
+        let mut group = TabGroup {
+            id: 1,
+            tabs: vec![fake_hwnd(100), fake_hwnd(200), fake_hwnd(300)],
+            active: 1,
+        };
+        let dissolve = group.remove(fake_hwnd(999));
+        assert!(!dissolve);
+        assert_eq!(group.tabs.len(), 3);
+        assert_eq!(group.active, 1);
+    }
+
+    // --- TabGroup::switch_to ---
+
+    #[test]
+    fn switch_to_changes_active() {
+        let mut group = TabGroup {
+            id: 1,
+            tabs: vec![fake_hwnd(100), fake_hwnd(200), fake_hwnd(300)],
+            active: 0,
+        };
+        group.switch_to(2);
+        assert_eq!(group.active, 2);
+        assert_eq!(group.active_hwnd(), fake_hwnd(300));
+    }
+
+    #[test]
+    fn switch_to_same_index_is_noop() {
+        let mut group = TabGroup {
+            id: 1,
+            tabs: vec![fake_hwnd(100), fake_hwnd(200)],
+            active: 1,
+        };
+        group.switch_to(1);
+        assert_eq!(group.active, 1);
+    }
+
+    #[test]
+    fn switch_to_out_of_bounds_is_noop() {
+        let mut group = TabGroup {
+            id: 1,
+            tabs: vec![fake_hwnd(100), fake_hwnd(200)],
+            active: 0,
+        };
+        group.switch_to(10);
+        assert_eq!(group.active, 0);
+    }
+
+    // --- TabGroup::add ---
+
+    #[test]
+    fn add_appends_and_activates_new_tab() {
+        let mut group = TabGroup {
+            id: 1,
+            tabs: vec![fake_hwnd(100), fake_hwnd(200)],
+            active: 0,
+        };
+        group.add(fake_hwnd(300));
+        assert_eq!(group.tabs, vec![fake_hwnd(100), fake_hwnd(200), fake_hwnd(300)]);
+        assert_eq!(group.active, 2);
+    }
+
+    #[test]
+    fn add_duplicate_is_noop() {
+        let mut group = TabGroup {
+            id: 1,
+            tabs: vec![fake_hwnd(100), fake_hwnd(200)],
+            active: 0,
+        };
+        group.add(fake_hwnd(100));
+        assert_eq!(group.tabs.len(), 2);
+        assert_eq!(group.active, 0);
+    }
+
+    // --- GroupManager lifecycle ---
+
+    #[test]
+    fn create_group_sets_up_state() {
+        let mut gm = GroupManager::new();
+        let gid = gm.create_group(fake_hwnd(100), fake_hwnd(200));
+        assert!(gm.groups.contains_key(&gid));
+        assert_eq!(gm.group_of(fake_hwnd(100)), Some(gid));
+        assert_eq!(gm.group_of(fake_hwnd(200)), Some(gid));
+        let group = gm.groups.get(&gid).unwrap();
+        assert_eq!(group.tabs, vec![fake_hwnd(100), fake_hwnd(200)]);
+        assert_eq!(group.active, 1);
+    }
+
+    #[test]
+    fn add_to_group_extends_and_tracks() {
+        let mut gm = GroupManager::new();
+        let gid = gm.create_group(fake_hwnd(100), fake_hwnd(200));
+        gm.add_to_group(gid, fake_hwnd(300));
+        assert_eq!(gm.group_of(fake_hwnd(300)), Some(gid));
+        let group = gm.groups.get(&gid).unwrap();
+        assert_eq!(group.tabs.len(), 3);
+    }
+
+    #[test]
+    fn remove_dissolves_two_tab_group_via_manager() {
+        let mut gm = GroupManager::new();
+        let gid = gm.create_group(fake_hwnd(100), fake_hwnd(200));
+        gm.remove_from_group(fake_hwnd(100));
+        assert_eq!(gm.group_of(fake_hwnd(100)), None);
+        assert_eq!(gm.group_of(fake_hwnd(200)), None);
+        assert!(!gm.groups.contains_key(&gid));
+    }
+
+    #[test]
+    fn remove_from_three_tab_keeps_group() {
+        let mut gm = GroupManager::new();
+        let gid = gm.create_group(fake_hwnd(100), fake_hwnd(200));
+        gm.add_to_group(gid, fake_hwnd(300));
+        gm.remove_from_group(fake_hwnd(200));
+        assert_eq!(gm.group_of(fake_hwnd(200)), None);
+        assert_eq!(gm.group_of(fake_hwnd(100)), Some(gid));
+        assert_eq!(gm.group_of(fake_hwnd(300)), Some(gid));
+        assert!(gm.groups.contains_key(&gid));
+    }
 }
