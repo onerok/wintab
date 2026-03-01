@@ -7,6 +7,7 @@ mod group;
 mod hook;
 mod overlay;
 mod position_store;
+mod preview;
 mod state;
 mod tray;
 mod vdesktop;
@@ -45,6 +46,7 @@ fn main() {
 
         register_msg_window_class();
         overlay::register_class();
+        preview::register_class();
 
         let msg_hwnd = create_msg_window();
 

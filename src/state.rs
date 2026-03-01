@@ -9,6 +9,7 @@ use crate::config::{RulesEngine, WindowRuleInfo};
 use crate::group::GroupManager;
 use crate::overlay::{self, OverlayManager};
 use crate::position_store::{self, PositionStore, RectDef};
+use crate::preview::PreviewManager;
 use crate::window::{self, WindowInfo};
 
 pub struct PeekState {
@@ -27,6 +28,7 @@ pub struct AppState {
     pub vdesktop: Option<crate::vdesktop::VDesktopManager>,
     pub rules: RulesEngine,
     pub position_store: PositionStore,
+    pub preview: PreviewManager,
 }
 
 thread_local! {
@@ -40,6 +42,7 @@ thread_local! {
         vdesktop: None,
         rules: RulesEngine { groups: Vec::new() },
         position_store: PositionStore::empty(),
+        preview: PreviewManager::new(),
     });
 }
 
@@ -97,6 +100,8 @@ impl AppState {
         if !self.enabled {
             return;
         }
+
+        self.preview.hide();
 
         let vd = match &self.vdesktop {
             Some(vd) => vd,
@@ -362,6 +367,7 @@ impl AppState {
     pub fn toggle_enabled(&mut self) {
         self.enabled = !self.enabled;
         if !self.enabled {
+            self.preview.hide();
             self.hide_peek();
             for &ov in self.overlays.overlays.values() {
                 unsafe {
@@ -375,6 +381,7 @@ impl AppState {
 
     pub fn shutdown(&mut self) {
         self.position_store.flush();
+        self.preview.destroy();
         self.hide_peek();
         self.groups.show_all_windows();
         self.overlays.destroy_all();

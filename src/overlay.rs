@@ -23,8 +23,8 @@ use crate::window::{self, WindowInfo};
 pub const TAB_HEIGHT: i32 = 28;
 const TAB_PADDING: i32 = 6;
 const ICON_SIZE: i32 = 16;
-const MIN_TAB_WIDTH: i32 = 40;
-const MAX_TAB_WIDTH: i32 = 200;
+pub const MIN_TAB_WIDTH: i32 = 40;
+pub const MAX_TAB_WIDTH: i32 = 200;
 
 const LPSTR_TEXTCALLBACKW: *const u16 = -1isize as *const u16;
 
@@ -819,10 +819,31 @@ unsafe extern "system" fn overlay_wnd_proc(
 
             if is_peek_overlay(hwnd) {
                 set_hover_tab(hwnd, 0);
-            } else if let Some((_gid, tab_index)) = hit_test_tab(hwnd, x) {
+            } else if let Some((gid, tab_index)) = hit_test_tab(hwnd, x) {
                 set_hover_tab(hwnd, tab_index as i32);
+
+                // Preview logic: start delay if hovering an inactive tab
+                state::try_with_state(|s| {
+                    let is_inactive = s.groups.groups.get(&gid)
+                        .map(|g| tab_index != g.active)
+                        .unwrap_or(false);
+                    if is_inactive {
+                        let tab_hwnd = s.groups.groups.get(&gid)
+                            .and_then(|g| g.tabs.get(tab_index).copied());
+                        if let Some(tab_hwnd) = tab_hwnd {
+                            s.preview.start_delay(hwnd, tab_hwnd);
+                        }
+                    } else {
+                        s.preview.cancel_delay(hwnd);
+                        s.preview.hide();
+                    }
+                });
             } else {
                 set_hover_tab(hwnd, -1);
+                state::try_with_state(|s| {
+                    s.preview.cancel_delay(hwnd);
+                    s.preview.hide();
+                });
             }
 
             crate::drag::on_mouse_move(hwnd, x, get_y_lparam(lparam));
@@ -838,6 +859,16 @@ unsafe extern "system" fn overlay_wnd_proc(
         }
         WM_MOUSELEAVE => {
             set_hover_tab(hwnd, -1);
+            state::try_with_state(|s| {
+                s.preview.cancel_delay(hwnd);
+                s.preview.hide();
+            });
+            0
+        }
+        WM_TIMER if wparam == crate::preview::PREVIEW_TIMER_ID => {
+            state::try_with_state(|s| {
+                s.preview.on_timer(hwnd, &s.groups, &s.overlays);
+            });
             0
         }
         WM_LBUTTONUP => {

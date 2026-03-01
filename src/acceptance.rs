@@ -3131,3 +3131,210 @@ fn acceptance_e2e_phantom_screenshot() {
         "BUG: Overlay is still visible after switching virtual desktops! See evidence/phantom_test/02_phantom_check.png"
     );
 }
+
+/// E2E test: tab preview on hover with DWM thumbnail.
+/// Spawns dummy_window.exe, groups two windows, switches so one is hidden,
+/// triggers the preview timer, verifies the DWM thumbnail preview appears,
+/// then hides it and verifies it disappears — with screenshot evidence at each step.
+#[test]
+fn acceptance_e2e_tab_preview() {
+    use crate::preview;
+
+    // Phase 0: Spawn dummy process with 2 windows
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let dummy_path = std::path::Path::new(manifest_dir)
+        .join("target")
+        .join("debug")
+        .join("dummy_window.exe");
+    assert!(
+        dummy_path.exists(),
+        "dummy_window.exe not found at {:?}. Run `cargo build --bin dummy_window` first.",
+        dummy_path
+    );
+
+    let mut child = std::process::Command::new(&dummy_path)
+        .args(["2", "E2EPreview"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .expect("Failed to spawn dummy_window.exe");
+
+    let child_pid = child.id();
+
+    // Phase 1: Discover windows
+    overlay::register_class();
+    preview::register_class();
+
+    let mut discovered: Vec<window::WindowInfo> = Vec::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        pump_messages(Duration::from_millis(200));
+        discovered = window::enumerate_windows()
+            .into_iter()
+            .filter(|info| {
+                let mut pid = 0u32;
+                unsafe {
+                    GetWindowThreadProcessId(info.hwnd, &mut pid);
+                }
+                pid == child_pid
+            })
+            .collect();
+        if discovered.len() >= 2 {
+            break;
+        }
+    }
+
+    assert_eq!(
+        discovered.len(),
+        2,
+        "Expected 2 windows from dummy process (PID {}), got {}",
+        child_pid,
+        discovered.len()
+    );
+
+    let win1 = discovered[0].hwnd;
+    let win2 = discovered[1].hwnd;
+
+    // Insert into state
+    state::with_state(|s| {
+        for info in &discovered {
+            s.windows.insert(info.hwnd, info.clone());
+        }
+    });
+
+    // Phase 2: Create group and switch to tab 0 so tab 1 (win2) is hidden
+    let (group_id, ov_hwnd) = state::with_state(|s| {
+        let gid = s.groups.create_group(win1, win2);
+        let ov = s.overlays.ensure_overlay(gid);
+        overlay::update_overlay(ov, gid, &s.groups, &s.windows);
+        // win2 is active (index 1). Switch to win1 (index 0) so win2 is hidden.
+        let group = s.groups.groups.get_mut(&gid).unwrap();
+        group.switch_to(0);
+        (gid, ov)
+    });
+
+    pump_messages(Duration::from_millis(300));
+
+    // Refresh overlay after switch
+    state::with_state(|s| {
+        overlay::update_overlay(ov_hwnd, group_id, &s.groups, &s.windows);
+    });
+
+    pump_messages(Duration::from_millis(100));
+
+    // Verify win2 is hidden
+    unsafe {
+        assert_ne!(IsWindowVisible(win1), 0, "win1 should be visible (active)");
+        assert_eq!(IsWindowVisible(win2), 0, "win2 should be hidden (inactive)");
+    }
+
+    // Screenshot 01: group with win1 active, win2 hidden — no preview yet
+    screenshot::capture_window(win1, "evidence/e2e_tab_preview/01_before_preview.png");
+
+    // Phase 3: Simulate hover delay firing — set pending state and call on_timer
+    // We bypass the actual SetTimer/WM_TIMER to directly trigger preview show
+    state::with_state(|s| {
+        s.preview.start_delay(ov_hwnd, win2);
+    });
+
+    // Simulate the timer firing by calling on_timer directly
+    state::with_state(|s| {
+        s.preview.on_timer(ov_hwnd, &s.groups, &s.overlays);
+    });
+
+    pump_messages(Duration::from_millis(300));
+
+    // Phase 4: Verify preview is showing
+    let (is_showing, preview_visible) = state::with_state(|s| {
+        let showing = s.preview.is_showing();
+        let phwnd = s.preview.preview_hwnd();
+        let visible = if !phwnd.is_null() {
+            unsafe { IsWindowVisible(phwnd) != 0 }
+        } else {
+            false
+        };
+        (showing, visible)
+    });
+
+    eprintln!(
+        "Preview state: is_showing={}, window_visible={}",
+        is_showing, preview_visible
+    );
+
+    // Screenshot 02: preview should be visible below the tab bar
+    // Capture a larger region to include the preview below the window
+    let (cap_x, cap_y, cap_w, cap_h) = {
+        let rect = window::get_window_rect(win1);
+        let margin = 10;
+        let x = rect.left - margin;
+        let y = rect.top - overlay::TAB_HEIGHT - margin;
+        // Extra 250px below for the preview thumbnail
+        let w = (rect.right - rect.left) + margin * 2;
+        let h = (rect.bottom - rect.top) + overlay::TAB_HEIGHT + margin * 2 + 250;
+        (x, y, w, h)
+    };
+    screenshot::capture_region(
+        cap_x,
+        cap_y,
+        cap_w,
+        cap_h,
+        "evidence/e2e_tab_preview/02_preview_visible.png",
+    );
+
+    assert!(
+        is_showing,
+        "Preview DWM thumbnail should be registered (is_showing=true)"
+    );
+    assert!(
+        preview_visible,
+        "Preview window should be visible on screen"
+    );
+
+    // Phase 5: Hide the preview
+    state::with_state(|s| {
+        s.preview.hide();
+    });
+
+    pump_messages(Duration::from_millis(100));
+
+    let (is_showing_after, preview_visible_after) = state::with_state(|s| {
+        let showing = s.preview.is_showing();
+        let phwnd = s.preview.preview_hwnd();
+        let visible = if !phwnd.is_null() {
+            unsafe { IsWindowVisible(phwnd) != 0 }
+        } else {
+            false
+        };
+        (showing, visible)
+    });
+
+    // Screenshot 03: preview hidden
+    screenshot::capture_region(
+        cap_x,
+        cap_y,
+        cap_w,
+        cap_h,
+        "evidence/e2e_tab_preview/03_preview_hidden.png",
+    );
+
+    assert!(
+        !is_showing_after,
+        "Preview should not be showing after hide()"
+    );
+    assert!(
+        !preview_visible_after,
+        "Preview window should not be visible after hide()"
+    );
+
+    // Cleanup
+    state::with_state(|s| {
+        s.preview.destroy();
+        s.groups.remove_from_group(win1);
+        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows);
+        s.windows.clear();
+        s.shutdown();
+    });
+
+    drop(child.stdin.take());
+    let _ = child.wait();
+}

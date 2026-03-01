@@ -44,8 +44,8 @@ Rich interactions that make tab groups genuinely powerful.
 
 | # | Item | Type | PBI | Effort | Status |
 |---|------|------|-----|--------|--------|
-| 5 | [Tab preview on hover](preview-on-hover.md) | Feature | Full | Medium | Todo |
-| 6 | [Remember last position and size](remember-position-size.md) | Feature | Full | Medium | Todo |
+| 5 | [Tab preview on hover](preview-on-hover.md) | Feature | Full | Medium | Done |
+| 6 | [Remember last position and size](remember-position-size.md) | Feature | Full | Medium | Done |
 
 **Why this order:** Preview is high-impact UX that leverages DWM thumbnails (no heavy lifting). Position memory builds on YAML config persistence and virtual desktop COM APIs already introduced in M3.
 
@@ -99,6 +99,6 @@ From spec sections not yet in backlog. To be groomed as earlier milestones land.
 |-----------|-------|--------------|--------|--------|
 | **M3: Stability** | 3 | None | Small | Done |
 | **M4: YAML Config** | 1 | None | Small | Done |
-| **M5: Polish** | 2 | M3 (vdesktop APIs) | Medium | Todo |
+| **M5: Polish** | 2 | M3 (vdesktop APIs) | Medium | Done |
 | **M6: Automation** | 1 | M4 | Large | Done |
 | **Future** | 23 | Varies | TBD | Todo |
