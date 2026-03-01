@@ -26,17 +26,15 @@ Bug fixes and small UX wins that make the MVP feel solid before adding features.
 
 ---
 
-## M4: Configuration & Settings (Medium-High Priority)
+## M4: YAML Configuration (Medium-High Priority)
 
-Unlock user customization. Required foundation for everything in M5+.
+Barebones file-based config. No UI — users edit `%APPDATA%\WinTab\config.yaml` directly.
 
 | # | Item | Type | PBI | Effort | Status |
 |---|------|------|-----|--------|--------|
-| 4 | [Config UI (system tray + settings dialog)](config-ui.md) | Feature | Full | Large | Todo |
+| 4 | YAML config file with rules engine | Feature | Full | Small | Done |
 
-**Why here:** Every subsequent feature (opacity, colors, preview size, shortcuts, rules) needs a settings system. Building it now unblocks M5 and M6.
-
-**Includes:** Expanded tray menu, modeless settings dialog (General / Appearance / Behavior tabs), JSON persistence in `%APPDATA%\WinTab\config.json`, live-apply without restart.
+**What's included:** `config.yaml` in `%APPDATA%\WinTab\` with auto-grouping rules (match by process_name, class_name, title; operators: equals, contains, starts_with, ends_with, regex; match modes: all/any). Loaded at startup, graceful fallback on missing/invalid file.
 
 ---
 
@@ -49,7 +47,7 @@ Rich interactions that make tab groups genuinely powerful.
 | 5 | [Tab preview on hover](preview-on-hover.md) | Feature | Full | Medium | Todo |
 | 6 | [Remember last position and size](remember-position-size.md) | Feature | Full | Medium | Todo |
 
-**Why this order:** Preview is high-impact UX that leverages DWM thumbnails (no heavy lifting). Position memory builds on the config persistence from M4 and needs virtual desktop COM APIs already introduced in M3.
+**Why this order:** Preview is high-impact UX that leverages DWM thumbnails (no heavy lifting). Position memory builds on YAML config persistence and virtual desktop COM APIs already introduced in M3.
 
 ---
 
@@ -59,9 +57,9 @@ Power-user features for automatic workflow setup.
 
 | # | Item | Type | PBI | Effort | Status |
 |---|------|------|-----|--------|--------|
-| 7 | [Automatic groups (rules engine)](automatic-groups.md) | Feature | Full | Large | Todo |
+| 7 | [Automatic groups (rules engine)](automatic-groups.md) | Feature | Full | Large | Done |
 
-**Why last among planned items:** Requires config UI (M4) for rule editing, benefits from position memory (M5) for default group positions. Most complex feature — needs new `rules.rs` module, regex matching, JSON rule storage, integration with `on_window_created`.
+**Status:** Rules engine implemented in `config.rs`, integrated into `state.rs` via `apply_rules()`. Windows matched on creation and added to named groups automatically.
 
 ---
 
@@ -91,6 +89,7 @@ From spec sections not yet in backlog. To be groomed as earlier milestones land.
 - New tab from running windows (`Ctrl+Win+T`) — window picker/selector UI
 - Window picker tool (crosshair for rule creation)
 - Config file watcher for live reload on external changes
+- Config UI (system tray settings dialog, modeless window with tabs for General / Appearance / Behavior, live-apply without restart)
 
 ---
 
@@ -99,7 +98,7 @@ From spec sections not yet in backlog. To be groomed as earlier milestones land.
 | Milestone | Items | Dependencies | Effort | Status |
 |-----------|-------|--------------|--------|--------|
 | **M3: Stability** | 3 | None | Small | Done |
-| **M4: Config** | 1 | None | Large | Todo |
-| **M5: Polish** | 2 | M3 (vdesktop APIs), M4 (settings) | Medium | Todo |
-| **M6: Automation** | 1 | M4, M5 | Large | Todo |
-| **Future** | 22 | M4-M6 | TBD | Todo |
+| **M4: YAML Config** | 1 | None | Small | Done |
+| **M5: Polish** | 2 | M3 (vdesktop APIs) | Medium | Todo |
+| **M6: Automation** | 1 | M4 | Large | Done |
+| **Future** | 23 | Varies | TBD | Todo |
