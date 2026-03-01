@@ -8,14 +8,26 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use crate::config::{RulesEngine, WindowRuleInfo};
 use crate::group::GroupManager;
 use crate::overlay::{self, OverlayManager};
-use crate::position_store::{self, PositionStore, RectDef};
+use crate::position_store::{self, MemberKey, PositionStore, RectDef};
 use crate::preview::PreviewManager;
 use crate::window::{self, WindowInfo};
+
+/// Custom message for deferred position restore.
+pub const WM_WINTAB_DEFERRED_RESTORE: u32 = WM_APP + 100;
 
 pub struct PeekState {
     pub target_hwnd: HWND,
     pub overlay_hwnd: HWND,
     pub leave_ticks: u32,
+}
+
+/// Saved position info for a deferred SetWindowPos call.
+#[derive(Debug, Clone)]
+pub struct DeferredRestore {
+    pub left: i32,
+    pub top: i32,
+    pub width: i32,
+    pub height: i32,
 }
 
 pub struct AppState {
@@ -29,6 +41,8 @@ pub struct AppState {
     pub rules: RulesEngine,
     pub position_store: PositionStore,
     pub preview: PreviewManager,
+    pub pending_restores: HashMap<HWND, DeferredRestore>,
+    pub msg_hwnd: HWND,
 }
 
 thread_local! {
@@ -43,6 +57,8 @@ thread_local! {
         rules: RulesEngine { groups: Vec::new() },
         position_store: PositionStore::empty(),
         preview: PreviewManager::new(),
+        pending_restores: HashMap::new(),
+        msg_hwnd: std::ptr::null_mut(),
     });
 }
 
@@ -73,9 +89,7 @@ pub fn try_with_state_ret<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut AppState) -> R,
 {
-    STATE.with(|cell| {
-        cell.try_borrow_mut().ok().map(|mut state| f(&mut state))
-    })
+    STATE.with(|cell| cell.try_borrow_mut().ok().map(|mut state| f(&mut state)))
 }
 
 impl AppState {
@@ -208,6 +222,7 @@ impl AppState {
 
     pub fn on_window_destroyed(&mut self, hwnd: HWND) {
         self.windows.remove(&hwnd);
+        self.pending_restores.remove(&hwnd);
 
         // Clean up pending rule singletons
         self.groups.pending_rules.retain(|_, &mut h| h != hwnd);
@@ -218,7 +233,8 @@ impl AppState {
 
         if let Some(gid) = self.groups.group_of(hwnd) {
             self.groups.remove_from_group(hwnd);
-            self.overlays.refresh_overlay(gid, &self.groups, &self.windows);
+            self.overlays
+                .refresh_overlay(gid, &self.groups, &self.windows);
         }
     }
 
@@ -285,6 +301,25 @@ impl AppState {
                 }
                 self.suppress_events = false;
 
+                // Record group-level position if this is a named group
+                if let Some(group_name) = self.group_name_for(gid) {
+                    if let Some(info) = self.windows.get(&hwnd) {
+                        let member_keys = self.collect_member_keys(gid);
+                        let dpi = window::get_window_dpi(hwnd);
+                        self.position_store.record_group(
+                            &group_name,
+                            member_keys,
+                            RectDef {
+                                left: info.rect.left,
+                                top: info.rect.top,
+                                right: info.rect.right,
+                                bottom: info.rect.bottom,
+                            },
+                            dpi,
+                        );
+                    }
+                }
+
                 if !self.overlays.desktop_hidden.contains(&gid) {
                     if let Some(&ov) = self.overlays.overlays.get(&gid) {
                         overlay::update_overlay(ov, gid, &self.groups, &self.windows);
@@ -326,7 +361,10 @@ impl AppState {
                     SetWindowPos(
                         ov,
                         HWND_TOPMOST,
-                        0, 0, 0, 0,
+                        0,
+                        0,
+                        0,
+                        0,
                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
                     );
                 }
@@ -434,7 +472,8 @@ impl AppState {
         if let Some(pending_hwnd) = self.groups.pending_rules.remove(&group_name) {
             if pending_hwnd != hwnd && self.windows.contains_key(&pending_hwnd) {
                 let gid = self.groups.create_group(pending_hwnd, hwnd);
-                self.groups.named_groups.insert(group_name, gid);
+                self.groups.named_groups.insert(group_name.clone(), gid);
+                self.try_restore_group_position(gid, &group_name);
                 let ov = self.overlays.ensure_overlay(gid);
                 overlay::update_overlay(ov, gid, &self.groups, &self.windows);
                 return;
@@ -446,15 +485,16 @@ impl AppState {
     }
 
     /// Try to restore a window's saved position from the position store.
+    /// Uses deferred restore via PostMessage when msg_hwnd is available.
     pub(crate) fn try_restore_position(&mut self, hwnd: HWND, info: &WindowInfo) {
-        let entry = match self.position_store.lookup(
-            &info.process_name,
-            &info.class_name,
-            &info.title,
-        ) {
-            Some(e) => e,
-            None => return,
-        };
+        let entry =
+            match self
+                .position_store
+                .lookup(&info.process_name, &info.class_name, &info.title)
+            {
+                Some(e) => e,
+                None => return,
+            };
 
         // Validate that a monitor exists at the saved rect
         if !position_store::monitor_exists_for_rect(&entry.rect) {
@@ -473,19 +513,56 @@ impl AppState {
                 (entry.rect.bottom as f64 * scale) as i32,
             )
         } else {
-            (entry.rect.left, entry.rect.top, entry.rect.right, entry.rect.bottom)
+            (
+                entry.rect.left,
+                entry.rect.top,
+                entry.rect.right,
+                entry.rect.bottom,
+            )
         };
 
-        unsafe {
-            SetWindowPos(
-                hwnd,
-                0 as _,
-                left,
-                top,
-                right - left,
-                bottom - top,
-                SWP_NOACTIVATE | SWP_NOZORDER,
-            );
+        let restore = DeferredRestore {
+            left,
+            top,
+            width: right - left,
+            height: bottom - top,
+        };
+
+        if !self.msg_hwnd.is_null() {
+            self.pending_restores.insert(hwnd, restore);
+            unsafe {
+                PostMessageW(self.msg_hwnd, WM_WINTAB_DEFERRED_RESTORE, hwnd as usize, 0);
+            }
+        } else {
+            // Fallback: apply immediately (e.g., during init before msg_hwnd is set)
+            unsafe {
+                SetWindowPos(
+                    hwnd,
+                    0 as _,
+                    restore.left,
+                    restore.top,
+                    restore.width,
+                    restore.height,
+                    SWP_NOACTIVATE | SWP_NOZORDER,
+                );
+            }
+        }
+    }
+
+    /// Apply a deferred position restore for a window.
+    pub fn apply_deferred_restore(&mut self, hwnd: HWND) {
+        if let Some(restore) = self.pending_restores.remove(&hwnd) {
+            unsafe {
+                SetWindowPos(
+                    hwnd,
+                    0 as _,
+                    restore.left,
+                    restore.top,
+                    restore.width,
+                    restore.height,
+                    SWP_NOACTIVATE | SWP_NOZORDER,
+                );
+            }
         }
     }
 
@@ -541,7 +618,11 @@ impl AppState {
             if in_hot || in_overlay || has_capture {
                 peek.leave_ticks = 0;
                 if !has_capture {
-                    overlay::update_peek_overlay(peek.overlay_hwnd, peek.target_hwnd, &self.windows);
+                    overlay::update_peek_overlay(
+                        peek.overlay_hwnd,
+                        peek.target_hwnd,
+                        &self.windows,
+                    );
                 }
                 self.peek = Some(peek);
             } else {
@@ -593,7 +674,12 @@ impl AppState {
         }
 
         // Use WindowFromPoint for z-order-aware fallback
-        let hit = unsafe { WindowFromPoint(POINT { x: cursor.x, y: cursor.y }) };
+        let hit = unsafe {
+            WindowFromPoint(POINT {
+                x: cursor.x,
+                y: cursor.y,
+            })
+        };
         if hit.is_null() {
             return None;
         }
@@ -626,6 +712,87 @@ impl AppState {
             }
 
             None
+        }
+    }
+
+    /// Find the rule group name for a given GroupId, if any.
+    fn group_name_for(&self, gid: crate::group::GroupId) -> Option<String> {
+        self.groups
+            .named_groups
+            .iter()
+            .find(|(_, &id)| id == gid)
+            .map(|(name, _)| name.clone())
+    }
+
+    /// Collect MemberKey entries for all windows in a group.
+    fn collect_member_keys(&self, gid: crate::group::GroupId) -> Vec<MemberKey> {
+        let group = match self.groups.groups.get(&gid) {
+            Some(g) => g,
+            None => return Vec::new(),
+        };
+        group
+            .tabs
+            .iter()
+            .filter_map(|&hwnd| {
+                self.windows.get(&hwnd).map(|info| MemberKey {
+                    process_name: info.process_name.clone(),
+                    class_name: info.class_name.clone(),
+                })
+            })
+            .collect()
+    }
+
+    /// Try to restore a group's saved position by moving the active window.
+    fn try_restore_group_position(&mut self, gid: crate::group::GroupId, group_name: &str) {
+        let member_keys = self.collect_member_keys(gid);
+        let entry = match self.position_store.lookup_group(group_name, &member_keys) {
+            Some(e) => e,
+            None => return,
+        };
+
+        if !position_store::monitor_exists_for_rect(&entry.rect) {
+            return;
+        }
+
+        let active_hwnd = match self.groups.groups.get(&gid) {
+            Some(g) => g.active_hwnd(),
+            None => return,
+        };
+
+        let current_dpi = window::get_window_dpi(active_hwnd);
+        let stored_dpi = entry.dpi;
+        let (left, top, right, bottom) = if stored_dpi > 0 && stored_dpi != current_dpi {
+            let scale = current_dpi as f64 / stored_dpi as f64;
+            (
+                (entry.rect.left as f64 * scale) as i32,
+                (entry.rect.top as f64 * scale) as i32,
+                (entry.rect.right as f64 * scale) as i32,
+                (entry.rect.bottom as f64 * scale) as i32,
+            )
+        } else {
+            (
+                entry.rect.left,
+                entry.rect.top,
+                entry.rect.right,
+                entry.rect.bottom,
+            )
+        };
+
+        unsafe {
+            SetWindowPos(
+                active_hwnd,
+                0 as _,
+                left,
+                top,
+                right - left,
+                bottom - top,
+                SWP_NOACTIVATE | SWP_NOZORDER,
+            );
+        }
+
+        // Sync all hidden windows to the restored position
+        if let Some(group) = self.groups.groups.get(&gid) {
+            group.sync_positions();
         }
     }
 }

@@ -1,7 +1,5 @@
 use windows_sys::Win32::Foundation::HWND;
-use windows_sys::Win32::System::Com::{
-    CoCreateInstance, CLSCTX_ALL,
-};
+use windows_sys::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
 
 // IVirtualDesktopManager COM interface
 const CLSID_VIRTUAL_DESKTOP_MANAGER: windows_sys::core::GUID = windows_sys::core::GUID {

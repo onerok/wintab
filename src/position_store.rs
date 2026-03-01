@@ -21,11 +21,28 @@ pub struct PositionEntry {
     pub hit_count: u32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MemberKey {
+    pub process_name: String,
+    pub class_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupPositionEntry {
+    pub group_name: String,
+    pub member_keys: Vec<MemberKey>,
+    pub rect: RectDef,
+    pub dpi: u32,
+    pub last_seen: u64,
+}
+
 #[derive(Serialize, Deserialize)]
 struct PositionFile {
     version: u32,
     #[serde(default)]
     entries: Vec<PositionEntry>,
+    #[serde(default)]
+    group_entries: Vec<GroupPositionEntry>,
 }
 
 const FLUSH_THRESHOLD: usize = 20;
@@ -34,21 +51,23 @@ const STALE_SECS: u64 = 30 * 24 * 3600; // 30 days
 
 pub struct PositionStore {
     entries: Vec<PositionEntry>,
+    group_entries: Vec<GroupPositionEntry>,
     path: PathBuf,
     dirty_count: usize,
 }
 
 impl PositionStore {
     pub fn load(path: &Path) -> Self {
-        let entries = match std::fs::read_to_string(path) {
+        let (entries, group_entries) = match std::fs::read_to_string(path) {
             Ok(content) => match serde_yaml::from_str::<PositionFile>(&content) {
-                Ok(f) => f.entries,
-                Err(_) => Vec::new(),
+                Ok(f) => (f.entries, f.group_entries),
+                Err(_) => (Vec::new(), Vec::new()),
             },
-            Err(_) => Vec::new(),
+            Err(_) => (Vec::new(), Vec::new()),
         };
         PositionStore {
             entries,
+            group_entries,
             path: path.to_path_buf(),
             dirty_count: 0,
         }
@@ -57,13 +76,19 @@ impl PositionStore {
     pub fn empty() -> Self {
         PositionStore {
             entries: Vec::new(),
+            group_entries: Vec::new(),
             path: PathBuf::new(),
             dirty_count: 0,
         }
     }
 
     /// Exact match first, then fuzzy title match. Returns the best entry.
-    pub fn lookup(&self, process_name: &str, class_name: &str, title: &str) -> Option<&PositionEntry> {
+    pub fn lookup(
+        &self,
+        process_name: &str,
+        class_name: &str,
+        title: &str,
+    ) -> Option<&PositionEntry> {
         // Exact match
         if let Some(e) = self.entries.iter().find(|e| {
             e.process_name == process_name && e.class_name == class_name && e.title == title
@@ -121,6 +146,59 @@ impl PositionStore {
         }
     }
 
+    /// Upsert a group position entry by group_name.
+    pub fn record_group(
+        &mut self,
+        name: &str,
+        member_keys: Vec<MemberKey>,
+        rect: RectDef,
+        dpi: u32,
+    ) {
+        let now = current_timestamp();
+
+        if let Some(e) = self.group_entries.iter_mut().find(|e| e.group_name == name) {
+            e.member_keys = member_keys;
+            e.rect = rect;
+            e.dpi = dpi;
+            e.last_seen = now;
+            self.dirty_count += 1;
+            if self.dirty_count >= FLUSH_THRESHOLD {
+                self.flush();
+            }
+            return;
+        }
+
+        self.group_entries.push(GroupPositionEntry {
+            group_name: name.to_string(),
+            member_keys,
+            rect,
+            dpi,
+            last_seen: now,
+        });
+        self.dirty_count += 1;
+        if self.dirty_count >= FLUSH_THRESHOLD {
+            self.flush();
+        }
+    }
+
+    /// Lookup a group position entry by name. Optionally verify member_keys overlap.
+    pub fn lookup_group(
+        &self,
+        name: &str,
+        member_keys: &[MemberKey],
+    ) -> Option<&GroupPositionEntry> {
+        self.group_entries.iter().find(|e| {
+            if e.group_name != name {
+                return false;
+            }
+            // If caller provided member_keys, verify at least one overlaps
+            if !member_keys.is_empty() && !e.member_keys.is_empty() {
+                return member_keys.iter().any(|mk| e.member_keys.contains(mk));
+            }
+            true
+        })
+    }
+
     /// Write entries to disk, evicting stale and capping at MAX_ENTRIES.
     pub fn flush(&mut self) {
         self.dirty_count = 0;
@@ -129,6 +207,8 @@ impl PositionStore {
 
         // Evict stale entries
         self.entries.retain(|e| now - e.last_seen < STALE_SECS);
+        self.group_entries
+            .retain(|e| now - e.last_seen < STALE_SECS);
 
         // Cap at MAX_ENTRIES (keep most recently seen)
         if self.entries.len() > MAX_ENTRIES {
@@ -143,6 +223,7 @@ impl PositionStore {
         let file = PositionFile {
             version: 1,
             entries: self.entries.clone(),
+            group_entries: self.group_entries.clone(),
         };
         if let Ok(yaml) = serde_yaml::to_string(&file) {
             let _ = std::fs::write(&self.path, yaml);
@@ -170,9 +251,7 @@ pub fn levenshtein(a: &str, b: &str) -> usize {
         curr[0] = i;
         for j in 1..=n {
             let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
-            curr[j] = (prev[j] + 1)
-                .min(curr[j - 1] + 1)
-                .min(prev[j - 1] + cost);
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
         }
         std::mem::swap(&mut prev, &mut curr);
     }
@@ -235,7 +314,10 @@ mod tests {
 
     #[test]
     fn fuzzy_match_identical() {
-        assert!(fuzzy_title_match("Visual Studio Code", "Visual Studio Code"));
+        assert!(fuzzy_title_match(
+            "Visual Studio Code",
+            "Visual Studio Code"
+        ));
     }
 
     #[test]
@@ -265,7 +347,13 @@ mod tests {
     #[test]
     fn lookup_exact_match() {
         let mut store = PositionStore::empty();
-        store.record("code.exe", "Chrome_WidgetWin_1", "main.rs", rect(0, 0, 800, 600), 96);
+        store.record(
+            "code.exe",
+            "Chrome_WidgetWin_1",
+            "main.rs",
+            rect(0, 0, 800, 600),
+            96,
+        );
         let result = store.lookup("code.exe", "Chrome_WidgetWin_1", "main.rs");
         assert!(result.is_some());
         assert_eq!(result.unwrap().rect.right, 800);
@@ -274,7 +362,13 @@ mod tests {
     #[test]
     fn lookup_fuzzy_fallback() {
         let mut store = PositionStore::empty();
-        store.record("code.exe", "CW1", "main.rs - Visual Studio", rect(10, 20, 800, 600), 96);
+        store.record(
+            "code.exe",
+            "CW1",
+            "main.rs - Visual Studio",
+            rect(10, 20, 800, 600),
+            96,
+        );
         // Exact title doesn't match, fuzzy should (only 1 char diff in 23-char string)
         let result = store.lookup("code.exe", "CW1", "main.rs - Visual Studi0");
         assert!(result.is_some());
@@ -304,7 +398,12 @@ mod tests {
             process_name: "old.exe".into(),
             class_name: "C".into(),
             title: "T".into(),
-            rect: RectDef { left: 0, top: 0, right: 100, bottom: 100 },
+            rect: RectDef {
+                left: 0,
+                top: 0,
+                right: 100,
+                bottom: 100,
+            },
             dpi: 96,
             last_seen: 0, // epoch — very old
             hit_count: 1,
@@ -313,7 +412,12 @@ mod tests {
             process_name: "new.exe".into(),
             class_name: "C".into(),
             title: "T".into(),
-            rect: RectDef { left: 0, top: 0, right: 100, bottom: 100 },
+            rect: RectDef {
+                left: 0,
+                top: 0,
+                right: 100,
+                bottom: 100,
+            },
             dpi: 96,
             last_seen: current_timestamp(),
             hit_count: 1,
@@ -332,7 +436,12 @@ mod tests {
                 process_name: format!("app{}.exe", i),
                 class_name: "C".into(),
                 title: "T".into(),
-                rect: RectDef { left: 0, top: 0, right: 100, bottom: 100 },
+                rect: RectDef {
+                    left: 0,
+                    top: 0,
+                    right: 100,
+                    bottom: 100,
+                },
                 dpi: 96,
                 last_seen: now - i as u64,
                 hit_count: 1,
@@ -343,6 +452,134 @@ mod tests {
     }
 
     fn rect(l: i32, t: i32, r: i32, b: i32) -> RectDef {
-        RectDef { left: l, top: t, right: r, bottom: b }
+        RectDef {
+            left: l,
+            top: t,
+            right: r,
+            bottom: b,
+        }
+    }
+
+    fn mk(process: &str, class: &str) -> MemberKey {
+        MemberKey {
+            process_name: process.to_string(),
+            class_name: class.to_string(),
+        }
+    }
+
+    // --- Group position entry tests ---
+
+    #[test]
+    fn record_group_and_lookup() {
+        let mut store = PositionStore::empty();
+        let keys = vec![
+            mk("code.exe", "CW1"),
+            mk("terminal.exe", "ConsoleWindowClass"),
+        ];
+        store.record_group("Editors", keys.clone(), rect(100, 100, 900, 700), 96);
+
+        let result = store.lookup_group("Editors", &keys);
+        assert!(result.is_some());
+        let entry = result.unwrap();
+        assert_eq!(entry.group_name, "Editors");
+        assert_eq!(entry.rect.left, 100);
+        assert_eq!(entry.rect.right, 900);
+        assert_eq!(entry.dpi, 96);
+        assert_eq!(entry.member_keys.len(), 2);
+    }
+
+    #[test]
+    fn record_group_upserts() {
+        let mut store = PositionStore::empty();
+        let keys = vec![mk("a.exe", "C")];
+        store.record_group("G1", keys.clone(), rect(0, 0, 100, 100), 96);
+        store.record_group("G1", keys.clone(), rect(50, 50, 200, 200), 120);
+        assert_eq!(store.group_entries.len(), 1);
+        assert_eq!(store.group_entries[0].rect.right, 200);
+        assert_eq!(store.group_entries[0].dpi, 120);
+    }
+
+    #[test]
+    fn lookup_group_no_match() {
+        let store = PositionStore::empty();
+        assert!(store.lookup_group("Missing", &[]).is_none());
+    }
+
+    #[test]
+    fn lookup_group_with_member_key_overlap() {
+        let mut store = PositionStore::empty();
+        let keys = vec![mk("a.exe", "C1"), mk("b.exe", "C2")];
+        store.record_group("G1", keys, rect(0, 0, 100, 100), 96);
+
+        // Partial overlap should match
+        let query_keys = vec![mk("a.exe", "C1")];
+        assert!(store.lookup_group("G1", &query_keys).is_some());
+
+        // No overlap should not match
+        let no_overlap = vec![mk("z.exe", "Z")];
+        assert!(store.lookup_group("G1", &no_overlap).is_none());
+    }
+
+    #[test]
+    fn lookup_group_empty_keys_matches_any() {
+        let mut store = PositionStore::empty();
+        let keys = vec![mk("a.exe", "C1")];
+        store.record_group("G1", keys, rect(0, 0, 100, 100), 96);
+
+        // Empty query keys should match (no overlap check)
+        assert!(store.lookup_group("G1", &[]).is_some());
+    }
+
+    #[test]
+    fn group_entry_serialization_roundtrip() {
+        let mut store = PositionStore::empty();
+        let keys = vec![mk("code.exe", "CW1"), mk("term.exe", "Console")];
+        store.record_group("Dev", keys.clone(), rect(10, 20, 800, 600), 96);
+
+        // Serialize
+        let file = PositionFile {
+            version: 1,
+            entries: store.entries.clone(),
+            group_entries: store.group_entries.clone(),
+        };
+        let yaml = serde_yaml::to_string(&file).unwrap();
+
+        // Deserialize
+        let parsed: PositionFile = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(parsed.group_entries.len(), 1);
+        assert_eq!(parsed.group_entries[0].group_name, "Dev");
+        assert_eq!(parsed.group_entries[0].member_keys.len(), 2);
+        assert_eq!(parsed.group_entries[0].rect.right, 800);
+    }
+
+    #[test]
+    fn backward_compatibility_no_group_entries() {
+        // YAML with no group_entries field — should deserialize cleanly
+        let yaml = "version: 1\nentries:\n  - process_name: a.exe\n    class_name: C\n    title: T\n    rect:\n      left: 0\n      top: 0\n      right: 100\n      bottom: 100\n    dpi: 96\n    last_seen: 1000000\n    hit_count: 1\n";
+        let parsed: PositionFile = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(parsed.entries.len(), 1);
+        assert!(parsed.group_entries.is_empty());
+    }
+
+    #[test]
+    fn flush_evicts_stale_group_entries() {
+        let mut store = PositionStore::empty();
+        store.group_entries.push(GroupPositionEntry {
+            group_name: "Old".into(),
+            member_keys: vec![mk("old.exe", "C")],
+            rect: rect(0, 0, 100, 100),
+            dpi: 96,
+            last_seen: 0, // epoch — very old
+        });
+        store.group_entries.push(GroupPositionEntry {
+            group_name: "New".into(),
+            member_keys: vec![mk("new.exe", "C")],
+            rect: rect(0, 0, 100, 100),
+            dpi: 96,
+            last_seen: current_timestamp(),
+        });
+        store.flush();
+        assert_eq!(store.group_entries.len(), 1);
+        assert_eq!(store.group_entries[0].group_name, "New");
     }
 }

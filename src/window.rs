@@ -1,13 +1,12 @@
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStringExt;
 
-use windows_sys::Win32::Foundation::{HWND, LPARAM, RECT, TRUE, CloseHandle, MAX_PATH};
+use windows_sys::Win32::Foundation::{CloseHandle, HWND, LPARAM, MAX_PATH, RECT, TRUE};
 use windows_sys::Win32::Graphics::Dwm::{
     DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS,
 };
 use windows_sys::Win32::System::Threading::{
-    GetCurrentProcessId, OpenProcess, QueryFullProcessImageNameW,
-    PROCESS_QUERY_LIMITED_INFORMATION,
+    GetCurrentProcessId, OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
@@ -244,10 +243,7 @@ pub fn get_process_name(hwnd: HWND) -> String {
             .to_string_lossy()
             .into_owned();
         // Extract just the filename
-        full.rsplit('\\')
-            .next()
-            .unwrap_or(&full)
-            .to_string()
+        full.rsplit('\\').next().unwrap_or(&full).to_string()
     }
 }
 
@@ -255,6 +251,10 @@ pub fn get_process_name(hwnd: HWND) -> String {
 pub fn get_window_dpi(hwnd: HWND) -> u32 {
     unsafe {
         let dpi = GetDpiForWindow(hwnd);
-        if dpi == 0 { 96 } else { dpi }
+        if dpi == 0 {
+            96
+        } else {
+            dpi
+        }
     }
 }

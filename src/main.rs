@@ -26,8 +26,16 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 static MSG_WINDOW_CLASS: &[u16] = &[
-    b'W' as u16, b'i' as u16, b'n' as u16, b'T' as u16, b'a' as u16, b'b' as u16,
-    b'M' as u16, b's' as u16, b'g' as u16, 0,
+    b'W' as u16,
+    b'i' as u16,
+    b'n' as u16,
+    b'T' as u16,
+    b'a' as u16,
+    b'b' as u16,
+    b'M' as u16,
+    b's' as u16,
+    b'g' as u16,
+    0,
 ];
 
 fn main() {
@@ -51,6 +59,7 @@ fn main() {
         let msg_hwnd = create_msg_window();
 
         state::with_state(|s| {
+            s.msg_hwnd = msg_hwnd;
             s.init();
         });
 
@@ -138,6 +147,11 @@ unsafe extern "system" fn msg_wnd_proc(
         }
         WM_TIMER => {
             state::with_state(|s| s.on_peek_timer());
+            0
+        }
+        m if m == state::WM_WINTAB_DEFERRED_RESTORE => {
+            let target_hwnd = wparam as HWND;
+            state::with_state(|s| s.apply_deferred_restore(target_hwnd));
             0
         }
         WM_DESTROY => {
