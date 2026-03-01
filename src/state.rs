@@ -778,6 +778,12 @@ impl AppState {
             )
         };
 
+        // Safety: SetWindowPos with SWP_NOACTIVATE | SWP_NOZORDER does not pump
+        // messages, so calling it inside with_state() is safe. The individual
+        // try_restore_position uses deferred restore via PostMessage as extra
+        // caution because it runs during on_window_created where more complex
+        // event chains can occur. sync_positions() below also uses
+        // SWP_NOACTIVATE | SWP_NOZORDER and is equally safe.
         unsafe {
             SetWindowPos(
                 active_hwnd,

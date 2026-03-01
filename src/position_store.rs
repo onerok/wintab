@@ -215,6 +215,11 @@ impl PositionStore {
             self.entries.sort_by(|a, b| b.last_seen.cmp(&a.last_seen));
             self.entries.truncate(MAX_ENTRIES);
         }
+        if self.group_entries.len() > MAX_ENTRIES {
+            self.group_entries
+                .sort_by(|a, b| b.last_seen.cmp(&a.last_seen));
+            self.group_entries.truncate(MAX_ENTRIES);
+        }
 
         if self.path.as_os_str().is_empty() {
             return;
