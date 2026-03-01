@@ -63,7 +63,12 @@ impl PositionStore {
     }
 
     /// Exact match first, then fuzzy title match. Returns the best entry.
-    pub fn lookup(&self, process_name: &str, class_name: &str, title: &str) -> Option<&PositionEntry> {
+    pub fn lookup(
+        &self,
+        process_name: &str,
+        class_name: &str,
+        title: &str,
+    ) -> Option<&PositionEntry> {
         // Exact match
         if let Some(e) = self.entries.iter().find(|e| {
             e.process_name == process_name && e.class_name == class_name && e.title == title
@@ -170,9 +175,7 @@ pub fn levenshtein(a: &str, b: &str) -> usize {
         curr[0] = i;
         for j in 1..=n {
             let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
-            curr[j] = (prev[j] + 1)
-                .min(curr[j - 1] + 1)
-                .min(prev[j - 1] + cost);
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
         }
         std::mem::swap(&mut prev, &mut curr);
     }
@@ -235,7 +238,10 @@ mod tests {
 
     #[test]
     fn fuzzy_match_identical() {
-        assert!(fuzzy_title_match("Visual Studio Code", "Visual Studio Code"));
+        assert!(fuzzy_title_match(
+            "Visual Studio Code",
+            "Visual Studio Code"
+        ));
     }
 
     #[test]
@@ -265,7 +271,13 @@ mod tests {
     #[test]
     fn lookup_exact_match() {
         let mut store = PositionStore::empty();
-        store.record("code.exe", "Chrome_WidgetWin_1", "main.rs", rect(0, 0, 800, 600), 96);
+        store.record(
+            "code.exe",
+            "Chrome_WidgetWin_1",
+            "main.rs",
+            rect(0, 0, 800, 600),
+            96,
+        );
         let result = store.lookup("code.exe", "Chrome_WidgetWin_1", "main.rs");
         assert!(result.is_some());
         assert_eq!(result.unwrap().rect.right, 800);
@@ -274,7 +286,13 @@ mod tests {
     #[test]
     fn lookup_fuzzy_fallback() {
         let mut store = PositionStore::empty();
-        store.record("code.exe", "CW1", "main.rs - Visual Studio", rect(10, 20, 800, 600), 96);
+        store.record(
+            "code.exe",
+            "CW1",
+            "main.rs - Visual Studio",
+            rect(10, 20, 800, 600),
+            96,
+        );
         // Exact title doesn't match, fuzzy should (only 1 char diff in 23-char string)
         let result = store.lookup("code.exe", "CW1", "main.rs - Visual Studi0");
         assert!(result.is_some());
@@ -304,7 +322,12 @@ mod tests {
             process_name: "old.exe".into(),
             class_name: "C".into(),
             title: "T".into(),
-            rect: RectDef { left: 0, top: 0, right: 100, bottom: 100 },
+            rect: RectDef {
+                left: 0,
+                top: 0,
+                right: 100,
+                bottom: 100,
+            },
             dpi: 96,
             last_seen: 0, // epoch — very old
             hit_count: 1,
@@ -313,7 +336,12 @@ mod tests {
             process_name: "new.exe".into(),
             class_name: "C".into(),
             title: "T".into(),
-            rect: RectDef { left: 0, top: 0, right: 100, bottom: 100 },
+            rect: RectDef {
+                left: 0,
+                top: 0,
+                right: 100,
+                bottom: 100,
+            },
             dpi: 96,
             last_seen: current_timestamp(),
             hit_count: 1,
@@ -332,7 +360,12 @@ mod tests {
                 process_name: format!("app{}.exe", i),
                 class_name: "C".into(),
                 title: "T".into(),
-                rect: RectDef { left: 0, top: 0, right: 100, bottom: 100 },
+                rect: RectDef {
+                    left: 0,
+                    top: 0,
+                    right: 100,
+                    bottom: 100,
+                },
                 dpi: 96,
                 last_seen: now - i as u64,
                 hit_count: 1,
@@ -343,6 +376,11 @@ mod tests {
     }
 
     fn rect(l: i32, t: i32, r: i32, b: i32) -> RectDef {
-        RectDef { left: l, top: t, right: r, bottom: b }
+        RectDef {
+            left: l,
+            top: t,
+            right: r,
+            bottom: b,
+        }
     }
 }

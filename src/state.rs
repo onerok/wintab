@@ -40,7 +40,7 @@ thread_local! {
         peek: None,
         suppress_events: false,
         vdesktop: None,
-        rules: RulesEngine { groups: Vec::new() },
+        rules: RulesEngine { groups: Vec::new(), preview_config: crate::config::PreviewConfig::default() },
         position_store: PositionStore::empty(),
         preview: PreviewManager::new(),
     });
@@ -73,9 +73,7 @@ pub fn try_with_state_ret<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut AppState) -> R,
 {
-    STATE.with(|cell| {
-        cell.try_borrow_mut().ok().map(|mut state| f(&mut state))
-    })
+    STATE.with(|cell| cell.try_borrow_mut().ok().map(|mut state| f(&mut state)))
 }
 
 impl AppState {
@@ -87,6 +85,8 @@ impl AppState {
             self.rules = RulesEngine::load(&dir.join("config.yaml"));
             self.position_store = PositionStore::load(&dir.join("positions.yaml"));
         }
+
+        self.preview.configure(&self.rules.preview_config);
 
         let windows = window::enumerate_windows();
         for info in windows {
@@ -145,6 +145,8 @@ impl AppState {
     /// as needed.  Called from on_focus_changed() as a reliable fallback
     /// since EVENT_SYSTEM_DESKTOPSWITCH may not arrive via the hook.
     fn sync_desktop_visibility(&mut self, focused_hwnd: HWND) {
+        self.preview.hide();
+
         let vd = match &self.vdesktop {
             Some(vd) => vd,
             None => return,
@@ -218,7 +220,8 @@ impl AppState {
 
         if let Some(gid) = self.groups.group_of(hwnd) {
             self.groups.remove_from_group(hwnd);
-            self.overlays.refresh_overlay(gid, &self.groups, &self.windows);
+            self.overlays
+                .refresh_overlay(gid, &self.groups, &self.windows);
         }
     }
 
@@ -326,7 +329,10 @@ impl AppState {
                     SetWindowPos(
                         ov,
                         HWND_TOPMOST,
-                        0, 0, 0, 0,
+                        0,
+                        0,
+                        0,
+                        0,
                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
                     );
                 }
@@ -447,14 +453,14 @@ impl AppState {
 
     /// Try to restore a window's saved position from the position store.
     pub(crate) fn try_restore_position(&mut self, hwnd: HWND, info: &WindowInfo) {
-        let entry = match self.position_store.lookup(
-            &info.process_name,
-            &info.class_name,
-            &info.title,
-        ) {
-            Some(e) => e,
-            None => return,
-        };
+        let entry =
+            match self
+                .position_store
+                .lookup(&info.process_name, &info.class_name, &info.title)
+            {
+                Some(e) => e,
+                None => return,
+            };
 
         // Validate that a monitor exists at the saved rect
         if !position_store::monitor_exists_for_rect(&entry.rect) {
@@ -473,7 +479,12 @@ impl AppState {
                 (entry.rect.bottom as f64 * scale) as i32,
             )
         } else {
-            (entry.rect.left, entry.rect.top, entry.rect.right, entry.rect.bottom)
+            (
+                entry.rect.left,
+                entry.rect.top,
+                entry.rect.right,
+                entry.rect.bottom,
+            )
         };
 
         unsafe {
@@ -541,7 +552,11 @@ impl AppState {
             if in_hot || in_overlay || has_capture {
                 peek.leave_ticks = 0;
                 if !has_capture {
-                    overlay::update_peek_overlay(peek.overlay_hwnd, peek.target_hwnd, &self.windows);
+                    overlay::update_peek_overlay(
+                        peek.overlay_hwnd,
+                        peek.target_hwnd,
+                        &self.windows,
+                    );
                 }
                 self.peek = Some(peek);
             } else {
@@ -593,7 +608,12 @@ impl AppState {
         }
 
         // Use WindowFromPoint for z-order-aware fallback
-        let hit = unsafe { WindowFromPoint(POINT { x: cursor.x, y: cursor.y }) };
+        let hit = unsafe {
+            WindowFromPoint(POINT {
+                x: cursor.x,
+                y: cursor.y,
+            })
+        };
         if hit.is_null() {
             return None;
         }
