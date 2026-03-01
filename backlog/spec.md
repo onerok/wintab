@@ -271,11 +271,11 @@ Right-clicking any tab shows:
 ## Technical Architecture
 
 ### Technology Stack
-- **Language:** C++ or Rust
-- **UI Framework:** Win32 API for tab rendering (lightweight, no heavy UI framework)
-- **Window Management:** Win32 API (`SetWindowsHookEx`, `SetWinEventHook`, window subclassing)
-- **Configuration Storage:** JSON or TOML file in `%APPDATA%\WinTab\`
-- **Build System:** CMake (C++) or Cargo (Rust)
+- **Language:** Rust
+- **UI Framework:** Raw Win32 API (`windows-sys 0.59` crate) for tab rendering (lightweight, no heavy UI framework)
+- **Window Management:** Win32 API (`SetWinEventHook` with `WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS` — no DLL injection)
+- **Configuration Storage:** YAML files in `%APPDATA%\WinTab\` (`serde_yaml`)
+- **Build System:** Cargo
 
 ### Key Implementation Details
 
@@ -284,10 +284,10 @@ Right-clicking any tab shows:
 - Enumerate existing windows on startup to attach tabs to already-open windows.
 
 #### Tab Rendering
-- Create a small layered window (`WS_EX_LAYERED | WS_EX_TOOLWINDOW`) positioned above each managed window's title bar.
+- Create a small layered window (`WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST`) positioned above each managed window's title bar.
 - The tab window is owned by WinTab, not the target application.
 - Use `WS_EX_TOOLWINDOW` to keep tab windows out of the taskbar and Alt+Tab.
-- Render tabs using Direct2D or GDI+ for smooth, anti-aliased rendering.
+- Render tabs using 32-bit ARGB DIB + `UpdateLayeredWindow` with `ULW_ALPHA`. GDI text/icon rendering with `fix_gdi_alpha()` to patch alpha channel.
 
 #### Window Grouping
 - When windows are grouped, hide all but the active tab's window using `ShowWindow(SW_HIDE)`.
@@ -305,9 +305,9 @@ Right-clicking any tab shows:
 - Tab rendering only repaints on changes (title update, focus change, hover).
 
 #### Configuration Persistence
-- Settings stored in `%APPDATA%\WinTab\config.json`.
-- Rules and groups stored in `%APPDATA%\WinTab\rules.json`.
-- File watcher for live reload on external config changes.
+- Config and auto-grouping rules stored in `%APPDATA%\WinTab\config.yaml`.
+- Window positions stored in `%APPDATA%\WinTab\positions.yaml`.
+- File watcher for live reload is a future enhancement.
 
 ---
 
@@ -325,33 +325,33 @@ Right-clicking any tab shows:
 
 ## Milestones
 
-### M1: Core Tab Engine
-- Window enumeration and event hooking
-- Tab rendering above managed windows
+### M1+M2: MVP — Done
+- Window enumeration and event hooking (`SetWinEventHook`, 9 event types)
+- Tab rendering above managed windows (GDI layered overlays)
 - Tab visibility states (hover reveal, opacity)
-- Basic window filtering (exclude popups, tool windows, etc.)
-
-### M2: Tab Grouping
-- Drag-and-drop to create groups
+- Basic window filtering (`is_eligible()`)
+- Drag-and-drop to create/merge/detach groups
 - Tab switching (show/hide windows)
 - Group position/size synchronization
-- Detach tabs from groups
-- Tab context menu
+- Peek overlay for ungrouped windows
+- System tray icon (Enable/Disable, Exit)
 
-### M3: Configuration & Tray
-- System tray icon and menu
-- Configuration dialog (General, Appearance, Behavior)
-- Settings persistence (JSON)
+### M3: Stability & Core UX — Done
+- Hide tabs when switching virtual desktops (COM `IVirtualDesktopManager`)
+- Peek z-order awareness (`WindowFromPoint` + `GetAncestor`)
+- Show full title on hover (Win32 `TOOLTIPS_CLASS`)
 
-### M4: Rules & Automation
-- Rule editor with matching criteria
-- Window picker tool
-- Automatic grouping engine
-- Exception management (whitelist/blacklist)
+### M4: YAML Configuration — Done
+- `%APPDATA%\WinTab\config.yaml` with auto-grouping rules
+- Match by process_name, class_name, title; operators: equals, contains, starts_with, ends_with, regex
 
-### M5: Polish
-- Keyboard shortcuts
-- Tab preview on hover
-- Drag file over tab to switch
-- Tab reordering, renaming, coloring
-- Performance optimization
+### M5: Polish — Done
+- Tab preview on hover (DWM Thumbnail API)
+- Remember window position and size (`positions.yaml` persistence)
+
+### M6: Automation — Done
+- Rules engine in `config.rs`, integrated via `apply_rules()` in `state.rs`
+- Pending singleton → group creation → group extension lifecycle
+
+### Future
+- See [tasks.md](tasks.md) and [implementation-gaps.md](implementation-gaps.md)
