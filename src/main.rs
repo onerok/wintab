@@ -6,6 +6,7 @@ mod hook;
 mod overlay;
 mod state;
 mod tray;
+mod vdesktop;
 mod window;
 
 #[cfg(test)]
@@ -14,6 +15,7 @@ mod acceptance;
 use std::panic;
 
 use windows_sys::Win32::Foundation::*;
+use windows_sys::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
@@ -34,6 +36,8 @@ fn main() {
     }));
 
     unsafe {
+        CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32);
+
         register_msg_window_class();
         overlay::register_class();
 

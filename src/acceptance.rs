@@ -1200,6 +1200,91 @@ fn acceptance_multiple_independent_groups() {
     }
 }
 
+/// Test: find_managed_window_at respects z-order by using WindowFromPoint.
+/// Creates two overlapping windows, brings one to front, verifies the frontmost is found.
+#[test]
+fn acceptance_peek_respects_zorder() {
+    let test_class = register_test_class();
+
+    // Create two windows at the same position (overlapping)
+    let title_back: Vec<u16> = "ZOrder Back\0".encode_utf16().collect();
+    let title_front: Vec<u16> = "ZOrder Front\0".encode_utf16().collect();
+    let instance = unsafe { GetModuleHandleW(ptr::null()) };
+
+    let win_back = unsafe {
+        CreateWindowExW(
+            0,
+            test_class.as_ptr(),
+            title_back.as_ptr(),
+            WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+            100, 100, 400, 300,
+            0 as _, 0 as _, instance, ptr::null(),
+        )
+    };
+    let win_front = unsafe {
+        CreateWindowExW(
+            0,
+            test_class.as_ptr(),
+            title_front.as_ptr(),
+            WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+            100, 100, 400, 300,
+            0 as _, 0 as _, instance, ptr::null(),
+        )
+    };
+    assert!(!win_back.is_null());
+    assert!(!win_front.is_null());
+
+    state::with_state(|s| {
+        s.windows.insert(win_back, make_window_info(win_back));
+        s.windows.insert(win_front, make_window_info(win_front));
+    });
+
+    pump_messages(Duration::from_millis(200));
+
+    // Bring win_front to the topmost to ensure it's above everything
+    unsafe {
+        SetForegroundWindow(win_front);
+        SetWindowPos(
+            win_front,
+            HWND_TOPMOST,
+            0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE,
+        );
+    }
+    pump_messages(Duration::from_millis(100));
+
+    // Use find_managed_window_at at the center of the overlapping area
+    let center = unsafe {
+        let mut rect: RECT = std::mem::zeroed();
+        GetWindowRect(win_front, &mut rect);
+        POINT {
+            x: (rect.left + rect.right) / 2,
+            y: (rect.top + rect.bottom) / 2,
+        }
+    };
+    let found = state::with_state(|s| {
+        s.find_managed_window_at(center)
+    });
+
+    // Should find win_front (the topmost), not win_back
+    assert_eq!(
+        found,
+        Some(win_front),
+        "find_managed_window_at should return the frontmost window"
+    );
+
+    // Cleanup
+    state::with_state(|s| {
+        s.windows.remove(&win_back);
+        s.windows.remove(&win_front);
+        s.shutdown();
+    });
+    unsafe {
+        DestroyWindow(win_back);
+        DestroyWindow(win_front);
+    }
+}
+
 /// Test: toggling enabled hides all overlays; toggling back shows them.
 #[test]
 fn acceptance_toggle_enabled() {
@@ -1277,6 +1362,187 @@ fn acceptance_toggle_enabled() {
         s.groups.remove_from_group(win1);
         s.groups.remove_from_group(win2);
         s.overlays.refresh_overlay(group_id, &s.groups, &s.windows);
+        s.windows.remove(&win1);
+        s.windows.remove(&win2);
+        s.shutdown();
+    });
+    unsafe {
+        DestroyWindow(win1);
+        DestroyWindow(win2);
+    }
+}
+
+/// Test: on_desktop_switch shows overlays for windows on current desktop.
+#[test]
+fn acceptance_desktop_switch_overlay_visibility() {
+    unsafe {
+        windows_sys::Win32::System::Com::CoInitializeEx(
+            std::ptr::null(),
+            windows_sys::Win32::System::Com::COINIT_APARTMENTTHREADED as u32,
+        );
+    }
+
+    overlay::register_class();
+    let test_class = register_test_class();
+
+    let win1 = create_test_window(&test_class, "VDesk A");
+    let win2 = create_test_window(&test_class, "VDesk B");
+    assert!(!win1.is_null());
+    assert!(!win2.is_null());
+
+    state::with_state(|s| {
+        s.vdesktop = crate::vdesktop::VDesktopManager::new();
+        s.windows.insert(win1, make_window_info(win1));
+        s.windows.insert(win2, make_window_info(win2));
+    });
+
+    pump_messages(Duration::from_millis(200));
+
+    let group_id = state::with_state(|s| {
+        let gid = s.groups.create_group(win1, win2);
+        let ov = s.overlays.ensure_overlay(gid);
+        overlay::update_overlay(ov, gid, &s.groups, &s.windows);
+        gid
+    });
+
+    pump_messages(Duration::from_millis(200));
+
+    let ov_hwnd = state::with_state(|s| {
+        *s.overlays.overlays.get(&group_id).unwrap()
+    });
+
+    // Call on_desktop_switch — since test windows are on current desktop,
+    // overlay should remain visible
+    state::with_state(|s| {
+        s.on_desktop_switch();
+    });
+
+    pump_messages(Duration::from_millis(100));
+
+    unsafe {
+        assert_ne!(
+            IsWindowVisible(ov_hwnd),
+            0,
+            "Overlay should remain visible for windows on current desktop"
+        );
+    }
+
+    // Cleanup
+    state::with_state(|s| {
+        s.groups.remove_from_group(win1);
+        s.groups.remove_from_group(win2);
+        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows);
+        s.windows.remove(&win1);
+        s.windows.remove(&win2);
+        s.shutdown();
+    });
+    unsafe {
+        DestroyWindow(win1);
+        DestroyWindow(win2);
+    }
+}
+
+/// Test: VDesktopManager returns true for a freshly created window on current desktop.
+#[test]
+fn acceptance_vdesktop_current_desktop_check() {
+    unsafe {
+        windows_sys::Win32::System::Com::CoInitializeEx(
+            std::ptr::null(),
+            windows_sys::Win32::System::Com::COINIT_APARTMENTTHREADED as u32,
+        );
+    }
+
+    let test_class = register_test_class();
+    let win = create_test_window(&test_class, "VDesk Check");
+    assert!(!win.is_null());
+
+    pump_messages(Duration::from_millis(200));
+
+    // Create a VDesktopManager and check the window
+    let mgr = crate::vdesktop::VDesktopManager::new();
+    // If COM init succeeded, freshly created window should be on current desktop
+    // If COM init failed (e.g., in CI), fallback returns true — test still passes
+    if let Some(mgr) = &mgr {
+        assert!(
+            mgr.is_on_current_desktop(win),
+            "Freshly created window should be on current desktop"
+        );
+    }
+
+    // Cleanup
+    state::with_state(|s| {
+        s.windows.remove(&win);
+        s.shutdown();
+    });
+    unsafe {
+        DestroyWindow(win);
+    }
+}
+
+/// Test: tooltip HWND is created with overlay and destroyed when overlay is destroyed.
+#[test]
+fn acceptance_tooltip_created_with_overlay() {
+    overlay::register_class();
+    let test_class = register_test_class();
+
+    let win1 = create_test_window(&test_class, "Tooltip A");
+    let win2 = create_test_window(&test_class, "Tooltip B");
+    assert!(!win1.is_null());
+    assert!(!win2.is_null());
+
+    state::with_state(|s| {
+        s.windows.insert(win1, make_window_info(win1));
+        s.windows.insert(win2, make_window_info(win2));
+    });
+
+    pump_messages(Duration::from_millis(200));
+
+    let group_id = state::with_state(|s| {
+        let gid = s.groups.create_group(win1, win2);
+        let ov = s.overlays.ensure_overlay(gid);
+        overlay::update_overlay(ov, gid, &s.groups, &s.windows);
+        gid
+    });
+
+    pump_messages(Duration::from_millis(200));
+
+    let (ov_hwnd, tooltip_hwnd) = state::with_state(|s| {
+        let ov = *s.overlays.overlays.get(&group_id).unwrap();
+        let tt = overlay::get_tooltip_hwnd(ov);
+        (ov, tt)
+    });
+
+    // Tooltip should have been created
+    assert!(!tooltip_hwnd.is_null(), "Tooltip HWND should not be null");
+    unsafe {
+        assert_ne!(IsWindow(tooltip_hwnd), 0, "Tooltip should be a valid window");
+    }
+
+    // Destroy overlay
+    state::with_state(|s| {
+        s.overlays.remove_overlay(group_id);
+    });
+
+    pump_messages(Duration::from_millis(100));
+
+    // Tooltip should be destroyed along with overlay
+    unsafe {
+        assert_eq!(
+            IsWindow(tooltip_hwnd),
+            0,
+            "Tooltip should be destroyed when overlay is destroyed"
+        );
+        assert_eq!(
+            IsWindow(ov_hwnd),
+            0,
+            "Overlay should be destroyed"
+        );
+    }
+
+    // Cleanup
+    state::with_state(|s| {
+        s.groups.remove_from_group(win1);
+        s.groups.remove_from_group(win2);
         s.windows.remove(&win1);
         s.windows.remove(&win2);
         s.shutdown();

@@ -10,6 +10,8 @@ use crate::state;
 
 use std::cell::RefCell;
 
+const EVENT_SYSTEM_DESKTOPSWITCH: u32 = 0x0020;
+
 thread_local! {
     static HOOKS: RefCell<Vec<HWINEVENTHOOK>> = const { RefCell::new(Vec::new()) };
 }
@@ -25,6 +27,7 @@ pub fn install() {
         (EVENT_OBJECT_HIDE, EVENT_OBJECT_HIDE),
         (EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MINIMIZESTART),
         (EVENT_SYSTEM_MINIMIZEEND, EVENT_SYSTEM_MINIMIZEEND),
+        (EVENT_SYSTEM_DESKTOPSWITCH, EVENT_SYSTEM_DESKTOPSWITCH),
     ];
 
     unsafe {
@@ -70,6 +73,12 @@ unsafe extern "system" fn win_event_proc(
     if id_object != 0 {
         return;
     }
+
+    if event == EVENT_SYSTEM_DESKTOPSWITCH {
+        state::with_state(|s| s.on_desktop_switch());
+        return;
+    }
+
     if hwnd.is_null() {
         return;
     }

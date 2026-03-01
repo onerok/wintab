@@ -3,7 +3,14 @@ use std::collections::HashMap;
 use windows_sys::Win32::Foundation::*;
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::UI::Controls::WM_MOUSELEAVE;
+use windows_sys::Win32::UI::Controls::{
+    NMHDR, NMTTDISPINFOW, TTTOOLINFOW,
+    TOOLTIPS_CLASSW, TTDT_INITIAL,
+    TTF_IDISHWND, TTF_SUBCLASS,
+    TTM_ADDTOOLW, TTM_SETDELAYTIME,
+    TTN_GETDISPINFOW, TTS_ALWAYSTIP, TTS_NOPREFIX,
+    WM_MOUSELEAVE,
+};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
 };
@@ -18,6 +25,8 @@ const TAB_PADDING: i32 = 6;
 const ICON_SIZE: i32 = 16;
 const MIN_TAB_WIDTH: i32 = 40;
 const MAX_TAB_WIDTH: i32 = 200;
+
+const LPSTR_TEXTCALLBACKW: *const u16 = -1isize as *const u16;
 
 const COLOR_ACTIVE: u32 = 0x00A06030;
 const COLOR_INACTIVE: u32 = 0x00705040;
@@ -35,6 +44,7 @@ struct OverlayData {
     group_id: GroupId,
     hover_tab: i32,
     peek_hwnd: HWND,
+    tooltip_hwnd: HWND,
 }
 
 fn get_x_lparam(lparam: isize) -> i32 {
@@ -66,6 +76,38 @@ pub fn register_class() {
     }
 }
 
+fn create_tooltip(parent: HWND) -> HWND {
+    unsafe {
+        let tt = CreateWindowExW(
+            WS_EX_TOPMOST,
+            TOOLTIPS_CLASSW,
+            std::ptr::null(),
+            WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP,
+            0, 0, 0, 0,
+            parent,
+            0 as _,
+            GetModuleHandleW(std::ptr::null()),
+            std::ptr::null(),
+        );
+        if tt.is_null() {
+            return tt;
+        }
+
+        let mut ti: TTTOOLINFOW = std::mem::zeroed();
+        ti.cbSize = std::mem::size_of::<TTTOOLINFOW>() as u32;
+        ti.uFlags = TTF_SUBCLASS | TTF_IDISHWND;
+        ti.hwnd = parent;
+        ti.uId = parent as usize;
+        ti.lpszText = LPSTR_TEXTCALLBACKW as *mut u16;
+        GetClientRect(parent, &mut ti.rect);
+
+        SendMessageW(tt, TTM_ADDTOOLW, 0, &ti as *const _ as isize);
+        SendMessageW(tt, TTM_SETDELAYTIME, TTDT_INITIAL as usize, 500);
+
+        tt
+    }
+}
+
 pub fn create_overlay(group_id: GroupId) -> HWND {
     unsafe {
         let instance = GetModuleHandleW(std::ptr::null());
@@ -79,10 +121,12 @@ pub fn create_overlay(group_id: GroupId) -> HWND {
         );
 
         if !hwnd.is_null() {
+            let tooltip = create_tooltip(hwnd);
             let data = Box::new(OverlayData {
                 group_id,
                 hover_tab: -1,
                 peek_hwnd: std::ptr::null_mut(),
+                tooltip_hwnd: tooltip,
             });
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(data) as isize);
         }
@@ -94,7 +138,10 @@ pub fn destroy_overlay(hwnd: HWND) {
     unsafe {
         let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut OverlayData;
         if !ptr.is_null() {
-            drop(Box::from_raw(ptr));
+            let data = Box::from_raw(ptr);
+            if !data.tooltip_hwnd.is_null() {
+                DestroyWindow(data.tooltip_hwnd);
+            }
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
         }
         DestroyWindow(hwnd);
@@ -114,10 +161,12 @@ pub fn create_peek_overlay(target_hwnd: HWND) -> HWND {
         );
 
         if !hwnd.is_null() {
+            let tooltip = create_tooltip(hwnd);
             let data = Box::new(OverlayData {
                 group_id: 0,
                 hover_tab: -1,
                 peek_hwnd: target_hwnd,
+                tooltip_hwnd: tooltip,
             });
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(data) as isize);
         }
@@ -651,6 +700,87 @@ fn set_hover_tab(overlay_hwnd: HWND, tab_index: i32) {
     }
 }
 
+#[cfg(test)]
+pub fn get_tooltip_hwnd(overlay_hwnd: HWND) -> HWND {
+    unsafe {
+        let ptr = GetWindowLongPtrW(overlay_hwnd, GWLP_USERDATA) as *const OverlayData;
+        if ptr.is_null() {
+            return std::ptr::null_mut();
+        }
+        (*ptr).tooltip_hwnd
+    }
+}
+
+/// Check if a title text would be truncated in the given available width.
+fn is_title_truncated(text_width: i32, available_width: i32) -> bool {
+    text_width > available_width
+}
+
+unsafe fn handle_tooltip_getdispinfo(overlay_hwnd: HWND, lparam: isize) {
+    let nmdi = &mut *(lparam as *mut NMTTDISPINFOW);
+
+    let ptr = GetWindowLongPtrW(overlay_hwnd, GWLP_USERDATA) as *const OverlayData;
+    if ptr.is_null() {
+        return;
+    }
+    let data = &*ptr;
+    let hover = data.hover_tab;
+    if hover < 0 {
+        return;
+    }
+
+    let title = if !data.peek_hwnd.is_null() {
+        state::try_with_state_ret(|s| {
+            s.windows.get(&data.peek_hwnd).map(|info| info.title.clone())
+        }).flatten()
+    } else {
+        state::try_with_state_ret(|s| {
+            let group = s.groups.groups.get(&data.group_id)?;
+            let hwnd = *group.tabs.get(hover as usize)?;
+            s.windows.get(&hwnd).map(|info| info.title.clone())
+        }).flatten()
+    };
+
+    if let Some(title) = title {
+        let hdc = GetDC(overlay_hwnd);
+        if !hdc.is_null() {
+            let text_utf16: Vec<u16> = title.encode_utf16().collect();
+            let mut text_size: SIZE = std::mem::zeroed();
+            GetTextExtentPoint32W(hdc, text_utf16.as_ptr(), text_utf16.len() as i32, &mut text_size);
+            ReleaseDC(overlay_hwnd, hdc);
+
+            let mut client_rect: RECT = std::mem::zeroed();
+            GetClientRect(overlay_hwnd, &mut client_rect);
+            let overlay_width = client_rect.right - client_rect.left;
+
+            let tab_count = if !data.peek_hwnd.is_null() {
+                1
+            } else {
+                state::try_with_state_ret(|s| {
+                    s.groups.groups.get(&data.group_id).map(|g| g.tabs.len() as i32)
+                }).flatten().unwrap_or(1)
+            };
+
+            let tab_width = if tab_count > 0 {
+                (overlay_width / tab_count).clamp(MIN_TAB_WIDTH, MAX_TAB_WIDTH)
+            } else {
+                MIN_TAB_WIDTH
+            };
+
+            let text_area = tab_width - TAB_PADDING * 2 - ICON_SIZE - 4;
+
+            if is_title_truncated(text_size.cx, text_area) {
+                let title_utf16: Vec<u16> = title.encode_utf16().take(79).chain(std::iter::once(0)).collect();
+                std::ptr::copy_nonoverlapping(
+                    title_utf16.as_ptr(),
+                    nmdi.szText.as_mut_ptr(),
+                    title_utf16.len().min(80),
+                );
+            }
+        }
+    }
+}
+
 unsafe extern "system" fn overlay_wnd_proc(
     hwnd: HWND,
     msg: u32,
@@ -700,10 +830,20 @@ unsafe extern "system" fn overlay_wnd_proc(
             0
         }
         WM_NCHITTEST => HTCLIENT as LRESULT,
+        WM_NOTIFY => {
+            let nmhdr = &*(lparam as *const NMHDR);
+            if nmhdr.code == TTN_GETDISPINFOW {
+                handle_tooltip_getdispinfo(hwnd, lparam);
+            }
+            0
+        }
         WM_DESTROY => {
             let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut OverlayData;
             if !ptr.is_null() {
-                drop(Box::from_raw(ptr));
+                let data = Box::from_raw(ptr);
+                if !data.tooltip_hwnd.is_null() {
+                    DestroyWindow(data.tooltip_hwnd);
+                }
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
             }
             0
@@ -1062,5 +1202,32 @@ mod tests {
         let mut om = OverlayManager::new();
         om.overlays.insert(42, fake_hwnd(100));
         assert_eq!(om.group_for_overlay(fake_hwnd(200)), None);
+    }
+
+    // --- is_title_truncated ---
+
+    #[test]
+    fn is_title_truncated_exact_fit() {
+        assert!(!is_title_truncated(100, 100));
+    }
+
+    #[test]
+    fn is_title_truncated_fits_with_room() {
+        assert!(!is_title_truncated(80, 100));
+    }
+
+    #[test]
+    fn is_title_truncated_exceeds() {
+        assert!(is_title_truncated(150, 100));
+    }
+
+    #[test]
+    fn is_title_truncated_zero_width() {
+        assert!(!is_title_truncated(0, 100));
+    }
+
+    #[test]
+    fn is_title_truncated_zero_available() {
+        assert!(is_title_truncated(1, 0));
     }
 }

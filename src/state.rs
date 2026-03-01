@@ -22,6 +22,7 @@ pub struct AppState {
     pub enabled: bool,
     pub peek: Option<PeekState>,
     suppress_events: bool,
+    pub vdesktop: Option<crate::vdesktop::VDesktopManager>,
 }
 
 thread_local! {
@@ -32,6 +33,7 @@ thread_local! {
         enabled: true,
         peek: None,
         suppress_events: false,
+        vdesktop: None,
     });
 }
 
@@ -57,11 +59,64 @@ where
     });
 }
 
+/// Try to access state without panicking, returning a value.
+pub fn try_with_state_ret<F, R>(f: F) -> Option<R>
+where
+    F: FnOnce(&mut AppState) -> R,
+{
+    STATE.with(|cell| {
+        cell.try_borrow_mut().ok().map(|mut state| f(&mut state))
+    })
+}
+
 impl AppState {
     pub fn init(&mut self) {
+        self.vdesktop = crate::vdesktop::VDesktopManager::new();
+
         let windows = window::enumerate_windows();
         for info in windows {
             self.windows.insert(info.hwnd, info);
+        }
+    }
+
+    pub fn on_desktop_switch(&mut self) {
+        if !self.enabled {
+            return;
+        }
+
+        let vd = match &self.vdesktop {
+            Some(vd) => vd,
+            None => return,
+        };
+
+        // Collect group IDs and their overlay/active-hwnd to avoid borrow conflicts
+        let group_info: Vec<_> = self
+            .overlays
+            .overlays
+            .iter()
+            .filter_map(|(&gid, &ov)| {
+                let group = self.groups.groups.get(&gid)?;
+                Some((gid, ov, group.active_hwnd()))
+            })
+            .collect();
+
+        for (_gid, ov, active_hwnd) in group_info {
+            if vd.is_on_current_desktop(active_hwnd) {
+                overlay::update_overlay(ov, _gid, &self.groups, &self.windows);
+            } else {
+                unsafe {
+                    ShowWindow(ov, SW_HIDE);
+                }
+            }
+        }
+
+        // Hide peek overlay if peek target is off-desktop
+        if let Some(ref peek) = self.peek {
+            if !vd.is_on_current_desktop(peek.target_hwnd) {
+                let peek_ov = peek.overlay_hwnd;
+                self.peek = None;
+                overlay::destroy_overlay(peek_ov);
+            }
         }
     }
 
@@ -333,22 +388,20 @@ impl AppState {
             return Some(fg);
         }
 
-        // Fall back to scanning all managed windows
-        for &hwnd in self.windows.keys() {
-            if hwnd == fg {
-                continue;
-            }
-            if self.groups.group_of(hwnd).is_some() {
-                continue;
-            }
-            if window::is_minimized(hwnd) {
-                continue;
-            }
-            if Self::cursor_in_hot_zone(cursor, hwnd) {
-                return Some(hwnd);
-            }
+        // Use WindowFromPoint for z-order-aware fallback
+        let hit = unsafe { WindowFromPoint(POINT { x: cursor.x, y: cursor.y }) };
+        if hit.is_null() {
+            return None;
         }
-
+        let top = unsafe { GetAncestor(hit, GA_ROOT) };
+        let top = if top.is_null() { hit } else { top };
+        if self.windows.contains_key(&top)
+            && self.groups.group_of(top).is_none()
+            && !window::is_minimized(top)
+            && Self::cursor_in_hot_zone(cursor, top)
+        {
+            return Some(top);
+        }
         None
     }
 
