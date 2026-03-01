@@ -24,6 +24,12 @@ run-release:
 test:
     cargo test
 
+# run full test suite: unit/acceptance tests first, then serial desktop-switch E2E tests
+test-all:
+    cargo build --bin dummy_window
+    cargo test
+    cargo test -- --ignored --test-threads=1 --nocapture
+
 # check for errors without building
 check:
     cargo check
