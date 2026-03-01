@@ -38,6 +38,8 @@ struct IVirtualDesktopManagerRaw {
 
 pub struct VDesktopManager {
     ptr: *mut IVirtualDesktopManagerRaw,
+    #[cfg(test)]
+    mock_off_desktop: std::collections::HashSet<isize>,
 }
 
 // SAFETY: VDesktopManager is only used from the single UI thread.
@@ -59,11 +61,30 @@ impl VDesktopManager {
             }
             Some(VDesktopManager {
                 ptr: ptr as *mut IVirtualDesktopManagerRaw,
+                #[cfg(test)]
+                mock_off_desktop: std::collections::HashSet::new(),
             })
         }
     }
 
+    #[cfg(test)]
+    pub fn set_off_desktop(&mut self, hwnds: &[HWND]) {
+        self.mock_off_desktop.clear();
+        for &h in hwnds {
+            self.mock_off_desktop.insert(h as isize);
+        }
+    }
+
+    #[cfg(test)]
+    pub fn clear_mock(&mut self) {
+        self.mock_off_desktop.clear();
+    }
+
     pub fn is_on_current_desktop(&self, hwnd: HWND) -> bool {
+        #[cfg(test)]
+        if !self.mock_off_desktop.is_empty() {
+            return !self.mock_off_desktop.contains(&(hwnd as isize));
+        }
         if self.ptr.is_null() {
             return true; // safe fallback
         }
@@ -98,7 +119,22 @@ mod tests {
     fn vdesktop_fallback_when_ptr_is_null() {
         let mgr = VDesktopManager {
             ptr: std::ptr::null_mut(),
+            mock_off_desktop: std::collections::HashSet::new(),
         };
+        assert!(mgr.is_on_current_desktop(1 as HWND));
+    }
+
+    #[test]
+    fn vdesktop_mock_off_desktop() {
+        let mut mgr = VDesktopManager {
+            ptr: std::ptr::null_mut(),
+            mock_off_desktop: std::collections::HashSet::new(),
+        };
+        mgr.set_off_desktop(&[1 as HWND, 2 as HWND]);
+        assert!(!mgr.is_on_current_desktop(1 as HWND));
+        assert!(!mgr.is_on_current_desktop(2 as HWND));
+        assert!(mgr.is_on_current_desktop(3 as HWND));
+        mgr.clear_mock();
         assert!(mgr.is_on_current_desktop(1 as HWND));
     }
 }

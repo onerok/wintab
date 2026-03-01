@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use windows_sys::Win32::Foundation::*;
 use windows_sys::Win32::Graphics::Gdi::*;
@@ -423,7 +423,9 @@ pub fn update_overlay(
 /// Standalone version for calls from overlay wndproc (outside with_state).
 pub fn update_overlay_standalone(overlay_hwnd: HWND, group_id: GroupId) {
     state::with_state(|s| {
-        update_overlay(overlay_hwnd, group_id, &s.groups, &s.windows);
+        if !s.overlays.desktop_hidden.contains(&group_id) {
+            update_overlay(overlay_hwnd, group_id, &s.groups, &s.windows);
+        }
     });
 }
 
@@ -986,12 +988,15 @@ pub fn hide_drop_preview(preview_hwnd: HWND) {
 /// Manages overlay windows mapped to groups.
 pub struct OverlayManager {
     pub overlays: HashMap<GroupId, HWND>,
+    /// Groups whose overlays are hidden because their windows are on another virtual desktop.
+    pub desktop_hidden: HashSet<GroupId>,
 }
 
 impl OverlayManager {
     pub fn new() -> Self {
         OverlayManager {
             overlays: HashMap::new(),
+            desktop_hidden: HashSet::new(),
         }
     }
 
@@ -1003,6 +1008,7 @@ impl OverlayManager {
         if let Some(hwnd) = self.overlays.remove(&group_id) {
             destroy_overlay(hwnd);
         }
+        self.desktop_hidden.remove(&group_id);
     }
 
     /// Update or remove overlay for a group (handles dissolved groups).
@@ -1014,8 +1020,11 @@ impl OverlayManager {
     ) {
         if !groups.groups.contains_key(&group_id) {
             self.remove_overlay(group_id);
+            self.desktop_hidden.remove(&group_id);
         } else if let Some(&ov) = self.overlays.get(&group_id) {
-            update_overlay(ov, group_id, groups, windows);
+            if !self.desktop_hidden.contains(&group_id) {
+                update_overlay(ov, group_id, groups, windows);
+            }
         }
     }
 
@@ -1025,7 +1034,9 @@ impl OverlayManager {
         windows: &HashMap<HWND, WindowInfo>,
     ) {
         for (&gid, &overlay) in &self.overlays {
-            update_overlay(overlay, gid, groups, windows);
+            if !self.desktop_hidden.contains(&gid) {
+                update_overlay(overlay, gid, groups, windows);
+            }
         }
     }
 
@@ -1033,6 +1044,7 @@ impl OverlayManager {
         for (_, hwnd) in self.overlays.drain() {
             destroy_overlay(hwnd);
         }
+        self.desktop_hidden.clear();
     }
 
     pub fn group_for_overlay(&self, overlay_hwnd: HWND) -> Option<GroupId> {

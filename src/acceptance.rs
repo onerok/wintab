@@ -13,6 +13,7 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::{NMTTDISPINFOW, TTM_GETTOOLCOUNT, TTN_GETDISPINFOW};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
+use crate::hook;
 use crate::overlay;
 use crate::state;
 use crate::window;
@@ -2567,4 +2568,566 @@ fn acceptance_e2e_minimize_restore() {
 
     drop(child.stdin.take());
     let _ = child.wait();
+}
+
+/// Test: desktop switch hides overlays AND they stay hidden through subsequent events.
+///
+/// This is the critical "close the loop" test. The bug was:
+/// 1. on_desktop_switch() hides overlays with ShowWindow(SW_HIDE)
+/// 2. on_focus_changed() fires immediately after → calls update_all() → SWP_SHOWWINDOW re-shows them
+/// 3. Overlay reappears on wrong desktop
+///
+/// The fix: desktop_hidden set in OverlayManager prevents update_overlay from re-showing.
+#[test]
+fn acceptance_desktop_switch_hides_overlay_through_focus_change() {
+    unsafe {
+        windows_sys::Win32::System::Com::CoInitializeEx(
+            std::ptr::null(),
+            windows_sys::Win32::System::Com::COINIT_APARTMENTTHREADED as u32,
+        );
+    }
+
+    overlay::register_class();
+    let test_class = register_test_class();
+
+    let win1 = create_test_window(&test_class, "Desktop Switch A");
+    let win2 = create_test_window(&test_class, "Desktop Switch B");
+    assert!(!win1.is_null());
+    assert!(!win2.is_null());
+
+    // Create a third window to simulate focus on a "different desktop" window
+    let win_other = create_test_window(&test_class, "Other Desktop Window");
+    assert!(!win_other.is_null());
+
+    state::with_state(|s| {
+        s.vdesktop = crate::vdesktop::VDesktopManager::new();
+        s.windows.insert(win1, make_window_info(win1));
+        s.windows.insert(win2, make_window_info(win2));
+        s.windows.insert(win_other, make_window_info(win_other));
+    });
+
+    pump_messages(Duration::from_millis(200));
+
+    // Step 1: Create group, verify overlay visible
+    let group_id = state::with_state(|s| {
+        let gid = s.groups.create_group(win1, win2);
+        let ov = s.overlays.ensure_overlay(gid);
+        overlay::update_overlay(ov, gid, &s.groups, &s.windows);
+        gid
+    });
+
+    pump_messages(Duration::from_millis(200));
+
+    let ov_hwnd = state::with_state(|s| {
+        *s.overlays.overlays.get(&group_id).unwrap()
+    });
+
+    // Verify overlay is visible
+    unsafe {
+        assert_ne!(
+            IsWindowVisible(ov_hwnd), 0,
+            "Step 1: Overlay should be visible after group creation"
+        );
+    }
+
+    screenshot::capture_window(win2, "evidence/desktop_switch_bug/01_overlay_visible.png");
+
+    // Step 2: Mock windows as being on a different desktop, then trigger desktop switch
+    state::with_state(|s| {
+        if let Some(ref mut vd) = s.vdesktop {
+            vd.set_off_desktop(&[win1, win2]);
+        }
+        s.on_desktop_switch();
+    });
+
+    pump_messages(Duration::from_millis(100));
+
+    // Verify overlay is hidden after desktop switch
+    unsafe {
+        assert_eq!(
+            IsWindowVisible(ov_hwnd), 0,
+            "Step 2: Overlay should be hidden after desktop switch (windows on other desktop)"
+        );
+    }
+
+    screenshot::capture_window(win_other, "evidence/desktop_switch_bug/02_overlay_hidden_after_switch.png");
+
+    // Step 3: THE BUG SCENARIO — simulate focus change on the new desktop
+    // Before the fix, this would re-show the overlay via update_all() + SWP_SHOWWINDOW
+    state::with_state(|s| {
+        s.on_focus_changed(win_other);
+    });
+
+    pump_messages(Duration::from_millis(100));
+
+    unsafe {
+        assert_eq!(
+            IsWindowVisible(ov_hwnd), 0,
+            "Step 3 CRITICAL: Overlay must stay hidden after focus change on different desktop"
+        );
+    }
+
+    screenshot::capture_window(win_other, "evidence/desktop_switch_bug/03_still_hidden_after_focus.png");
+
+    // Step 4: Simulate title change on the hidden window — another re-show vector
+    state::with_state(|s| {
+        s.on_title_changed(win1);
+    });
+
+    pump_messages(Duration::from_millis(100));
+
+    unsafe {
+        assert_eq!(
+            IsWindowVisible(ov_hwnd), 0,
+            "Step 4: Overlay must stay hidden after title change on hidden window"
+        );
+    }
+
+    // Step 5: Simulate window move on the hidden window — yet another re-show vector
+    state::with_state(|s| {
+        s.on_window_moved(win1);
+    });
+
+    pump_messages(Duration::from_millis(100));
+
+    unsafe {
+        assert_eq!(
+            IsWindowVisible(ov_hwnd), 0,
+            "Step 5: Overlay must stay hidden after window move on hidden window"
+        );
+    }
+
+    // Step 6: Switch BACK — clear mock, simulate coming back to original desktop
+    state::with_state(|s| {
+        if let Some(ref mut vd) = s.vdesktop {
+            vd.clear_mock();
+        }
+        s.on_desktop_switch();
+    });
+
+    pump_messages(Duration::from_millis(200));
+
+    unsafe {
+        assert_ne!(
+            IsWindowVisible(ov_hwnd), 0,
+            "Step 6: Overlay should reappear when switching back to the original desktop"
+        );
+    }
+
+    screenshot::capture_window(win2, "evidence/desktop_switch_bug/04_overlay_restored.png");
+
+    // Verify desktop_hidden is cleared
+    state::with_state(|s| {
+        assert!(
+            !s.overlays.desktop_hidden.contains(&group_id),
+            "desktop_hidden flag should be cleared after switching back"
+        );
+    });
+
+    // Cleanup
+    state::with_state(|s| {
+        s.groups.remove_from_group(win1);
+        s.groups.remove_from_group(win2);
+        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows);
+        s.windows.clear();
+        s.shutdown();
+    });
+    unsafe {
+        DestroyWindow(win1);
+        DestroyWindow(win2);
+        DestroyWindow(win_other);
+    }
+}
+
+/// Helper: press and hold a modifier key.
+unsafe fn key_down(vk: u16, flags: u32) {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
+    let mut input: INPUT = std::mem::zeroed();
+    input.r#type = INPUT_KEYBOARD;
+    input.Anonymous.ki.wVk = vk;
+    input.Anonymous.ki.dwFlags = flags;
+    SendInput(1, &input, std::mem::size_of::<INPUT>() as i32);
+}
+
+/// Helper: release a modifier key.
+unsafe fn key_up(vk: u16, flags: u32) {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
+    let mut input: INPUT = std::mem::zeroed();
+    input.r#type = INPUT_KEYBOARD;
+    input.Anonymous.ki.wVk = vk;
+    input.Anonymous.ki.dwFlags = flags | KEYEVENTF_KEYUP;
+    SendInput(1, &input, std::mem::size_of::<INPUT>() as i32);
+}
+
+/// Helper: send Ctrl+Win+Arrow to switch virtual desktop.
+/// direction: VK_RIGHT or VK_LEFT
+unsafe fn switch_virtual_desktop(direction: u16) {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
+    // Press modifiers
+    key_down(VK_LWIN, 0);
+    key_down(VK_CONTROL, 0);
+    thread::sleep(Duration::from_millis(50));
+    // Press arrow
+    key_down(direction, KEYEVENTF_EXTENDEDKEY);
+    key_up(direction, KEYEVENTF_EXTENDEDKEY);
+    thread::sleep(Duration::from_millis(50));
+    // Release modifiers
+    key_up(VK_CONTROL, 0);
+    key_up(VK_LWIN, 0);
+}
+
+/// TRUE E2E test: actually switches virtual desktops using keyboard input.
+///
+/// This test:
+/// 1. Spawns real dummy windows in a separate process
+/// 2. Groups them with real overlays
+/// 3. Installs Win32 event hooks (like the real app)
+/// 4. Sends Ctrl+Win+Right to ACTUALLY switch virtual desktops
+/// 5. Verifies overlay is hidden via IsWindowVisible + screenshots
+/// 6. Sends Ctrl+Win+Left to switch back
+/// 7. Verifies overlay reappears
+///
+/// WARNING: This test manipulates the user's virtual desktops.
+/// It always switches back, even on failure (via cleanup).
+///
+/// Run with: cargo test acceptance_e2e_real_desktop_switch -- --ignored --nocapture
+#[test]
+#[ignore]
+fn acceptance_e2e_real_desktop_switch() {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
+
+    // Phase 0: Build prerequisites
+    unsafe {
+        windows_sys::Win32::System::Com::CoInitializeEx(
+            std::ptr::null(),
+            windows_sys::Win32::System::Com::COINIT_APARTMENTTHREADED as u32,
+        );
+    }
+
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let dummy_path = std::path::Path::new(manifest_dir)
+        .join("target")
+        .join("debug")
+        .join("dummy_window.exe");
+    assert!(
+        dummy_path.exists(),
+        "dummy_window.exe not found. Run `cargo build --bin dummy_window` first."
+    );
+
+    // Spawn dummy process with 2 windows
+    let mut child = Command::new(&dummy_path)
+        .args(["2", "VDeskE2E"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .expect("Failed to spawn dummy_window.exe");
+    let child_pid = child.id();
+
+    // Phase 1: Discover windows
+    overlay::register_class();
+
+    let mut discovered: Vec<WindowInfo> = Vec::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        pump_messages(Duration::from_millis(200));
+        discovered = window::enumerate_windows()
+            .into_iter()
+            .filter(|info| {
+                let mut pid = 0u32;
+                unsafe { GetWindowThreadProcessId(info.hwnd, &mut pid); }
+                pid == child_pid
+            })
+            .collect();
+        if discovered.len() >= 2 {
+            break;
+        }
+    }
+    assert_eq!(discovered.len(), 2, "Expected 2 dummy windows");
+
+    let win1 = discovered[0].hwnd;
+    let win2 = discovered[1].hwnd;
+
+    // Phase 2: Set up state, VDesktopManager, hooks
+    state::with_state(|s| {
+        s.vdesktop = crate::vdesktop::VDesktopManager::new();
+        for info in &discovered {
+            s.windows.insert(info.hwnd, info.clone());
+        }
+    });
+
+    // Install hooks so EVENT_SYSTEM_DESKTOPSWITCH fires our handler
+    hook::install();
+
+    // Create group
+    let group_id = state::with_state(|s| {
+        let gid = s.groups.create_group(win1, win2);
+        let ov = s.overlays.ensure_overlay(gid);
+        overlay::update_overlay(ov, gid, &s.groups, &s.windows);
+        gid
+    });
+
+    pump_messages(Duration::from_millis(300));
+
+    let ov_hwnd = state::with_state(|s| {
+        *s.overlays.overlays.get(&group_id).expect("Overlay not found")
+    });
+
+    // Verify overlay is visible
+    unsafe {
+        assert_ne!(IsWindowVisible(ov_hwnd), 0, "Overlay should be visible");
+    }
+    screenshot::capture_window(win2, "evidence/e2e_real_desktop_switch/01_overlay_visible.png");
+
+    // Save the window rect so we can screenshot the same region after switching desktops
+    let win2_rect = window::get_window_rect(win2);
+    let margin = 10;
+    let cap_x = win2_rect.left - margin;
+    let cap_y = win2_rect.top - overlay::TAB_HEIGHT - margin;
+    let cap_w = (win2_rect.right - win2_rect.left) + margin * 2;
+    let cap_h = (win2_rect.bottom - win2_rect.top) + overlay::TAB_HEIGHT + margin * 2;
+
+    // Verify VDesktopManager reports windows on current desktop
+    let on_current = state::with_state(|s| {
+        s.vdesktop.as_ref().map(|vd| vd.is_on_current_desktop(win1)).unwrap_or(false)
+    });
+    assert!(on_current, "Windows should be on current desktop before switch");
+
+    // Phase 3: Switch to next virtual desktop (Ctrl+Win+Right)
+    unsafe { switch_virtual_desktop(VK_RIGHT); }
+
+    // Wait for the desktop switch animation to complete
+    thread::sleep(Duration::from_secs(2));
+
+    // Poll COM until active window (win2) is reported as off-desktop.
+    // Note: COM may be inconsistent for non-active windows (win1 sometimes reports true
+    // even when off-desktop), but the active window's result is what matters for on_desktop_switch.
+    let mut active_on_current_after = true;
+    let poll_deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < poll_deadline {
+        pump_messages(Duration::from_millis(200));
+
+        active_on_current_after = state::with_state(|s| {
+            s.vdesktop.as_ref().map(|vd| vd.is_on_current_desktop(win2)).unwrap_or(true)
+        });
+
+        if !active_on_current_after {
+            break;
+        }
+        thread::sleep(Duration::from_millis(300));
+    }
+
+    // Call on_desktop_switch regardless — if COM works, it hides; if not, it's a no-op
+    state::with_state(|s| s.on_desktop_switch());
+    pump_messages(Duration::from_millis(200));
+
+    // Phase 4: Record state
+    let overlay_visible_after_switch = unsafe { IsWindowVisible(ov_hwnd) != 0 };
+    let desktop_hidden_set = state::with_state(|s| {
+        s.overlays.desktop_hidden.contains(&group_id)
+    });
+
+    // Diagnostic output for CI/evidence
+    eprintln!(
+        "  overlay_visible={}, desktop_hidden={}, com_off={}",
+        overlay_visible_after_switch, desktop_hidden_set, !active_on_current_after
+    );
+
+    // Screenshot at the EXACT location where the dummy windows were —
+    // if the overlay is still visible, this will show the phantom tabs
+    screenshot::capture_region(cap_x, cap_y, cap_w, cap_h, "evidence/e2e_real_desktop_switch/02_after_switch.png");
+
+    // Phase 5: Switch BACK (Ctrl+Win+Left) — always do this before asserting
+    unsafe { switch_virtual_desktop(VK_LEFT); }
+    thread::sleep(Duration::from_secs(2));
+
+    // Poll until COM reports active window (win2) back on current desktop
+    let poll_deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < poll_deadline {
+        pump_messages(Duration::from_millis(200));
+        let back = state::with_state(|s| {
+            s.vdesktop.as_ref().map(|vd| vd.is_on_current_desktop(win2)).unwrap_or(false)
+        });
+        if back {
+            break;
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+
+    // Manually call on_desktop_switch for the return trip too
+    state::with_state(|s| s.on_desktop_switch());
+    pump_messages(Duration::from_millis(300));
+
+    // Screenshot after switching back
+    screenshot::capture_window(win2, "evidence/e2e_real_desktop_switch/03_after_switch_back.png");
+
+    let overlay_visible_after_return = unsafe { IsWindowVisible(ov_hwnd) != 0 };
+
+    // Phase 6: Cleanup (always runs)
+    hook::uninstall();
+    state::with_state(|s| {
+        s.groups.remove_from_group(win1);
+        s.groups.remove_from_group(win2);
+        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows);
+        s.windows.clear();
+        s.shutdown();
+    });
+    drop(child.stdin.take());
+    let _ = child.wait();
+
+    // Phase 7: Assert
+    assert!(
+        !active_on_current_after,
+        "COM should report active window (win2) as off-desktop after switch"
+    );
+    assert!(
+        desktop_hidden_set,
+        "desktop_hidden flag should be set for the group after desktop switch"
+    );
+    assert!(
+        !overlay_visible_after_switch,
+        "Overlay should be HIDDEN after switching to a different virtual desktop"
+    );
+    assert!(
+        overlay_visible_after_return,
+        "Overlay should be VISIBLE again after switching back"
+    );
+}
+
+/// Bare-bones bug reproduction: NO assertions about internal state, NO manual on_desktop_switch().
+/// Just groups windows, switches desktop via SendInput, and screenshots the same region.
+/// If phantom tabs are visible in 02_phantom_check.png, the bug is confirmed.
+///
+/// Run with: cargo test acceptance_e2e_phantom_screenshot -- --ignored --nocapture
+#[test]
+#[ignore]
+fn acceptance_e2e_phantom_screenshot() {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
+
+    unsafe {
+        windows_sys::Win32::System::Com::CoInitializeEx(
+            std::ptr::null(),
+            windows_sys::Win32::System::Com::COINIT_APARTMENTTHREADED as u32,
+        );
+    }
+
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let dummy_path = std::path::Path::new(manifest_dir)
+        .join("target")
+        .join("debug")
+        .join("dummy_window.exe");
+    assert!(dummy_path.exists(), "Run `cargo build --bin dummy_window` first.");
+
+    // Spawn 2 dummy windows
+    let mut child = Command::new(&dummy_path)
+        .args(["2", "PhantomTest"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .expect("Failed to spawn dummy_window.exe");
+    let child_pid = child.id();
+
+    overlay::register_class();
+
+    // Discover windows
+    let mut discovered: Vec<WindowInfo> = Vec::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        pump_messages(Duration::from_millis(200));
+        discovered = window::enumerate_windows()
+            .into_iter()
+            .filter(|info| {
+                let mut pid = 0u32;
+                unsafe { GetWindowThreadProcessId(info.hwnd, &mut pid); }
+                pid == child_pid
+            })
+            .collect();
+        if discovered.len() >= 2 {
+            break;
+        }
+    }
+    assert_eq!(discovered.len(), 2, "Expected 2 dummy windows");
+
+    let win1 = discovered[0].hwnd;
+    let win2 = discovered[1].hwnd;
+
+    // Set up state + hooks (like the real app)
+    state::with_state(|s| {
+        s.vdesktop = crate::vdesktop::VDesktopManager::new();
+        for info in &discovered {
+            s.windows.insert(info.hwnd, info.clone());
+        }
+    });
+    hook::install();
+
+    // Create group + overlay
+    let group_id = state::with_state(|s| {
+        let gid = s.groups.create_group(win1, win2);
+        let ov = s.overlays.ensure_overlay(gid);
+        overlay::update_overlay(ov, gid, &s.groups, &s.windows);
+        gid
+    });
+
+    pump_messages(Duration::from_millis(500));
+
+    // Record window position BEFORE switching
+    let rect = window::get_window_rect(win2);
+    let margin = 20;
+    let cap_x = rect.left - margin;
+    let cap_y = rect.top - overlay::TAB_HEIGHT - margin;
+    let cap_w = (rect.right - rect.left) + margin * 2;
+    let cap_h = (rect.bottom - rect.top) + overlay::TAB_HEIGHT + margin * 2;
+
+    // Screenshot BEFORE: proves overlay is there
+    screenshot::capture_region(cap_x, cap_y, cap_w, cap_h, "evidence/phantom_test/01_before_switch.png");
+    eprintln!("  Captured 01_before_switch.png at ({},{}) {}x{}", cap_x, cap_y, cap_w, cap_h);
+
+    // ---- SWITCH DESKTOP ----
+    // Do NOT manually call on_desktop_switch. Let the hook handle it (or not).
+    unsafe { switch_virtual_desktop(VK_RIGHT); }
+
+    // Wait for desktop switch animation + let hooks fire
+    thread::sleep(Duration::from_secs(2));
+    pump_messages(Duration::from_millis(500));
+
+    // Extra pump to let any focus-change / event re-shows happen
+    thread::sleep(Duration::from_millis(500));
+    pump_messages(Duration::from_millis(500));
+
+    // Screenshot AFTER: same region. If overlay is visible here = bug confirmed.
+    screenshot::capture_region(cap_x, cap_y, cap_w, cap_h, "evidence/phantom_test/02_phantom_check.png");
+    eprintln!("  Captured 02_phantom_check.png — inspect for phantom tabs!");
+
+    // Check overlay visibility WHILE on the other desktop
+    let ov_hwnd = state::with_state(|s| {
+        *s.overlays.overlays.get(&group_id).expect("Overlay not found")
+    });
+    let overlay_visible_on_other_desktop = unsafe { IsWindowVisible(ov_hwnd) != 0 };
+    eprintln!("  overlay_visible_on_other_desktop = {}", overlay_visible_on_other_desktop);
+
+    // ---- SWITCH BACK (always, before asserting) ----
+    unsafe { switch_virtual_desktop(VK_LEFT); }
+    thread::sleep(Duration::from_secs(2));
+    pump_messages(Duration::from_millis(500));
+
+    // Screenshot AFTER return
+    screenshot::capture_region(cap_x, cap_y, cap_w, cap_h, "evidence/phantom_test/03_after_return.png");
+    eprintln!("  Captured 03_after_return.png");
+
+    // Cleanup
+    hook::uninstall();
+    state::with_state(|s| {
+        s.groups.remove_from_group(win1);
+        s.groups.remove_from_group(win2);
+        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows);
+        s.windows.clear();
+        s.shutdown();
+    });
+    drop(child.stdin.take());
+    let _ = child.wait();
+
+    // THE ASSERTION: overlay must NOT be visible on the other desktop
+    assert!(
+        !overlay_visible_on_other_desktop,
+        "BUG: Overlay is still visible after switching virtual desktops! See evidence/phantom_test/02_phantom_check.png"
+    );
 }

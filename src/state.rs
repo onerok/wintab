@@ -114,10 +114,12 @@ impl AppState {
             })
             .collect();
 
-        for (_gid, ov, active_hwnd) in group_info {
+        for (gid, ov, active_hwnd) in group_info {
             if vd.is_on_current_desktop(active_hwnd) {
-                overlay::update_overlay(ov, _gid, &self.groups, &self.windows);
+                self.overlays.desktop_hidden.remove(&gid);
+                overlay::update_overlay(ov, gid, &self.groups, &self.windows);
             } else {
+                self.overlays.desktop_hidden.insert(gid);
                 unsafe {
                     ShowWindow(ov, SW_HIDE);
                 }
@@ -183,8 +185,10 @@ impl AppState {
         }
 
         if let Some(gid) = self.groups.group_of(hwnd) {
-            if let Some(&ov) = self.overlays.overlays.get(&gid) {
-                overlay::update_overlay(ov, gid, &self.groups, &self.windows);
+            if !self.overlays.desktop_hidden.contains(&gid) {
+                if let Some(&ov) = self.overlays.overlays.get(&gid) {
+                    overlay::update_overlay(ov, gid, &self.groups, &self.windows);
+                }
             }
         }
     }
@@ -225,8 +229,10 @@ impl AppState {
                 }
                 self.suppress_events = false;
 
-                if let Some(&ov) = self.overlays.overlays.get(&gid) {
-                    overlay::update_overlay(ov, gid, &self.groups, &self.windows);
+                if !self.overlays.desktop_hidden.contains(&gid) {
+                    if let Some(&ov) = self.overlays.overlays.get(&gid) {
+                        overlay::update_overlay(ov, gid, &self.groups, &self.windows);
+                    }
                 }
             }
         }
@@ -295,8 +301,10 @@ impl AppState {
             if let Some(group) = self.groups.groups.get_mut(&gid) {
                 group.restore();
             }
-            if let Some(&ov) = self.overlays.overlays.get(&gid) {
-                overlay::update_overlay(ov, gid, &self.groups, &self.windows);
+            if !self.overlays.desktop_hidden.contains(&gid) {
+                if let Some(&ov) = self.overlays.overlays.get(&gid) {
+                    overlay::update_overlay(ov, gid, &self.groups, &self.windows);
+                }
             }
         }
     }
