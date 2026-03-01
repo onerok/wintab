@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::Path;
 
 use serde::Deserialize;
@@ -50,6 +51,7 @@ pub enum RuleField {
     ProcessName,
     ClassName,
     Title,
+    CommandLine,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -64,6 +66,8 @@ pub enum Matcher {
     Contains(String, bool),
     StartsWith(String, bool),
     EndsWith(String, bool),
+    NotEquals(String, bool),
+    NotContains(String, bool),
     Regex(regex::Regex),
 }
 
@@ -91,6 +95,7 @@ pub struct WindowRuleInfo<'a> {
     pub process_name: &'a str,
     pub class_name: &'a str,
     pub title: &'a str,
+    pub command_line: &'a str,
 }
 
 impl Matcher {
@@ -107,7 +112,9 @@ impl Matcher {
                 if *case_sensitive {
                     value.contains(pat.as_str())
                 } else {
-                    value.to_ascii_lowercase().contains(&pat.to_ascii_lowercase())
+                    value
+                        .to_ascii_lowercase()
+                        .contains(&pat.to_ascii_lowercase())
                 }
             }
             Matcher::StartsWith(pat, case_sensitive) => {
@@ -128,6 +135,22 @@ impl Matcher {
                         .ends_with(&pat.to_ascii_lowercase())
                 }
             }
+            Matcher::NotEquals(pat, case_sensitive) => {
+                if *case_sensitive {
+                    value != pat
+                } else {
+                    !value.eq_ignore_ascii_case(pat)
+                }
+            }
+            Matcher::NotContains(pat, case_sensitive) => {
+                if *case_sensitive {
+                    !value.contains(pat.as_str())
+                } else {
+                    !value
+                        .to_ascii_lowercase()
+                        .contains(&pat.to_ascii_lowercase())
+                }
+            }
             Matcher::Regex(re) => re.is_match(value),
         }
     }
@@ -139,6 +162,7 @@ impl WindowRule {
             RuleField::ProcessName => info.process_name,
             RuleField::ClassName => info.class_name,
             RuleField::Title => info.title,
+            RuleField::CommandLine => info.command_line,
         };
         self.matcher.matches(value)
     }
@@ -168,16 +192,18 @@ impl RulesEngine {
             Err(_) => return Self::empty(),
         };
 
+        let mut seen_names = HashSet::new();
         let groups = config
             .rules
             .into_iter()
             .filter_map(|def| {
-                let rules: Vec<WindowRule> = def
-                    .patterns
-                    .into_iter()
-                    .filter_map(parse_pattern)
-                    .collect();
+                let rules: Vec<WindowRule> =
+                    def.patterns.into_iter().filter_map(parse_pattern).collect();
                 if rules.is_empty() {
+                    return None;
+                }
+                if !seen_names.insert(def.name.clone()) {
+                    eprintln!("WinTab: duplicate rule group name {:?}, skipping", def.name);
                     return None;
                 }
                 Some(RuleGroup {
@@ -210,6 +236,13 @@ impl RulesEngine {
     pub fn has_rules(&self) -> bool {
         !self.groups.is_empty()
     }
+
+    /// Returns true if any rule references the command_line field.
+    pub fn uses_command_line(&self) -> bool {
+        self.groups
+            .iter()
+            .any(|g| g.rules.iter().any(|r| r.field == RuleField::CommandLine))
+    }
 }
 
 fn parse_field(s: &str) -> Option<RuleField> {
@@ -217,6 +250,7 @@ fn parse_field(s: &str) -> Option<RuleField> {
         "process_name" => Some(RuleField::ProcessName),
         "class_name" => Some(RuleField::ClassName),
         "title" => Some(RuleField::Title),
+        "command_line" => Some(RuleField::CommandLine),
         _ => None,
     }
 }
@@ -228,6 +262,8 @@ fn parse_pattern(def: PatternDef) -> Option<WindowRule> {
         "contains" => Matcher::Contains(def.value, def.case_sensitive),
         "starts_with" => Matcher::StartsWith(def.value, def.case_sensitive),
         "ends_with" => Matcher::EndsWith(def.value, def.case_sensitive),
+        "not_equals" => Matcher::NotEquals(def.value, def.case_sensitive),
+        "not_contains" => Matcher::NotContains(def.value, def.case_sensitive),
         "regex" => {
             let re = regex::Regex::new(&def.value).ok()?;
             Matcher::Regex(re)
@@ -243,11 +279,21 @@ mod tests {
     use std::io::Write;
 
     fn info(process: &str, class: &str, title: &str) -> WindowRuleInfo<'static> {
+        info_with_cmd(process, class, title, "")
+    }
+
+    fn info_with_cmd(
+        process: &str,
+        class: &str,
+        title: &str,
+        cmd: &str,
+    ) -> WindowRuleInfo<'static> {
         // Leak strings for test convenience
         WindowRuleInfo {
             process_name: Box::leak(process.to_string().into_boxed_str()),
             class_name: Box::leak(class.to_string().into_boxed_str()),
             title: Box::leak(title.to_string().into_boxed_str()),
+            command_line: Box::leak(cmd.to_string().into_boxed_str()),
         }
     }
 
@@ -517,6 +563,206 @@ mod tests {
         let engine = RulesEngine::load(&path);
         // Group skipped — no valid patterns
         assert!(!engine.has_rules());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ── Unit 8: command_line field tests ──
+
+    #[test]
+    fn parse_field_command_line() {
+        assert_eq!(parse_field("command_line"), Some(RuleField::CommandLine));
+    }
+
+    #[test]
+    fn command_line_rule_matches() {
+        let engine = RulesEngine {
+            groups: vec![RuleGroup {
+                name: "DevTools".into(),
+                enabled: true,
+                match_mode: MatchMode::All,
+                rules: vec![WindowRule {
+                    field: RuleField::CommandLine,
+                    matcher: Matcher::Contains("--profile=dev".into(), false),
+                }],
+            }],
+        };
+        let i = info_with_cmd("app.exe", "", "", "app.exe --profile=dev --verbose");
+        assert_eq!(engine.apply(&i), Some("DevTools"));
+
+        let i2 = info_with_cmd("app.exe", "", "", "app.exe --profile=prod");
+        assert_eq!(engine.apply(&i2), None);
+    }
+
+    #[test]
+    fn load_command_line_yaml() {
+        let dir = std::env::temp_dir().join("wintab_test_config");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("cmd_line.yaml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(
+            f,
+            r#"rules:
+  - name: "DevApps"
+    patterns:
+      - field: command_line
+        op: contains
+        value: "--dev-mode"
+"#
+        )
+        .unwrap();
+        let engine = RulesEngine::load(&path);
+        assert!(engine.has_rules());
+        assert!(engine.uses_command_line());
+        assert_eq!(engine.groups[0].rules[0].field, RuleField::CommandLine);
+
+        let i = info_with_cmd("app.exe", "", "", "app.exe --dev-mode");
+        assert_eq!(engine.apply(&i), Some("DevApps"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn uses_command_line_false_when_not_referenced() {
+        let engine = RulesEngine {
+            groups: vec![RuleGroup {
+                name: "X".into(),
+                enabled: true,
+                match_mode: MatchMode::All,
+                rules: vec![WindowRule {
+                    field: RuleField::ProcessName,
+                    matcher: Matcher::Equals("x.exe".into(), false),
+                }],
+            }],
+        };
+        assert!(!engine.uses_command_line());
+    }
+
+    // ── Unit 9: negation operator tests ──
+
+    #[test]
+    fn matcher_not_equals_matches_when_different() {
+        let m = Matcher::NotEquals("foo.exe".into(), false);
+        assert!(m.matches("bar.exe"));
+        assert!(m.matches("BAR.EXE"));
+    }
+
+    #[test]
+    fn matcher_not_equals_no_match_when_equal() {
+        let m = Matcher::NotEquals("foo.exe".into(), false);
+        assert!(!m.matches("foo.exe"));
+        assert!(!m.matches("FOO.EXE"));
+    }
+
+    #[test]
+    fn matcher_not_equals_case_sensitive() {
+        let m = Matcher::NotEquals("Foo.exe".into(), true);
+        assert!(m.matches("foo.exe")); // different case = not equal
+        assert!(!m.matches("Foo.exe")); // exact match = equal
+    }
+
+    #[test]
+    fn matcher_not_contains_matches_when_absent() {
+        let m = Matcher::NotContains("debug".into(), false);
+        assert!(m.matches("release-build"));
+        assert!(m.matches("PRODUCTION"));
+    }
+
+    #[test]
+    fn matcher_not_contains_no_match_when_present() {
+        let m = Matcher::NotContains("debug".into(), false);
+        assert!(!m.matches("debug-build"));
+        assert!(!m.matches("has-DEBUG-flag"));
+    }
+
+    #[test]
+    fn matcher_not_contains_case_sensitive() {
+        let m = Matcher::NotContains("Debug".into(), true);
+        assert!(m.matches("debug-build")); // wrong case = absent
+        assert!(!m.matches("Debug-build")); // exact case = present
+    }
+
+    #[test]
+    fn load_negation_operators_yaml() {
+        let dir = std::env::temp_dir().join("wintab_test_config");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("negation.yaml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(
+            f,
+            r#"rules:
+  - name: "NonDebug"
+    match: all
+    patterns:
+      - field: process_name
+        op: not_equals
+        value: "debug.exe"
+      - field: title
+        op: not_contains
+        value: "[DEBUG]"
+"#
+        )
+        .unwrap();
+        let engine = RulesEngine::load(&path);
+        assert!(engine.has_rules());
+        assert_eq!(engine.groups[0].rules.len(), 2);
+
+        // Neither condition triggers exclusion
+        let i = info("app.exe", "", "My App");
+        assert_eq!(engine.apply(&i), Some("NonDebug"));
+
+        // process_name matches exclusion
+        let i2 = info("debug.exe", "", "My App");
+        assert_eq!(engine.apply(&i2), None);
+
+        // title contains exclusion substring
+        let i3 = info("app.exe", "", "My App [DEBUG]");
+        assert_eq!(engine.apply(&i3), None);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ── Unit 11: duplicate group name tests ──
+
+    #[test]
+    fn load_duplicate_group_names_keeps_first() {
+        let dir = std::env::temp_dir().join("wintab_test_config");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("dups.yaml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(
+            f,
+            r#"rules:
+  - name: "Browsers"
+    patterns:
+      - field: process_name
+        op: equals
+        value: "chrome.exe"
+  - name: "Browsers"
+    patterns:
+      - field: process_name
+        op: equals
+        value: "firefox.exe"
+  - name: "Editors"
+    patterns:
+      - field: process_name
+        op: equals
+        value: "code.exe"
+"#
+        )
+        .unwrap();
+        let engine = RulesEngine::load(&path);
+        assert!(engine.has_rules());
+        // Only 2 groups: first "Browsers" + "Editors" (second "Browsers" skipped)
+        assert_eq!(engine.groups.len(), 2);
+        assert_eq!(engine.groups[0].name, "Browsers");
+        assert_eq!(engine.groups[1].name, "Editors");
+
+        // First "Browsers" group matches chrome, not firefox
+        let i_chrome = info("chrome.exe", "", "");
+        assert_eq!(engine.apply(&i_chrome), Some("Browsers"));
+
+        let i_firefox = info("firefox.exe", "", "");
+        assert_eq!(engine.apply(&i_firefox), None);
+
         let _ = std::fs::remove_file(&path);
     }
 }

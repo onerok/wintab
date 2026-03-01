@@ -87,4 +87,3 @@ pub fn capture_window(hwnd: HWND, path: &str) {
     let h = (rect.bottom - rect.top) + TAB_HEIGHT + margin * 2;
     capture_region(x, y, w, h, path);
 }
-

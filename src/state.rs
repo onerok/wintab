@@ -73,9 +73,7 @@ pub fn try_with_state_ret<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut AppState) -> R,
 {
-    STATE.with(|cell| {
-        cell.try_borrow_mut().ok().map(|mut state| f(&mut state))
-    })
+    STATE.with(|cell| cell.try_borrow_mut().ok().map(|mut state| f(&mut state)))
 }
 
 impl AppState {
@@ -218,7 +216,8 @@ impl AppState {
 
         if let Some(gid) = self.groups.group_of(hwnd) {
             self.groups.remove_from_group(hwnd);
-            self.overlays.refresh_overlay(gid, &self.groups, &self.windows);
+            self.overlays
+                .refresh_overlay(gid, &self.groups, &self.windows);
         }
     }
 
@@ -326,7 +325,10 @@ impl AppState {
                     SetWindowPos(
                         ov,
                         HWND_TOPMOST,
-                        0, 0, 0, 0,
+                        0,
+                        0,
+                        0,
+                        0,
                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
                     );
                 }
@@ -406,14 +408,27 @@ impl AppState {
         if self.groups.group_of(hwnd).is_some() {
             return;
         }
+
+        // Lazily populate command_line only when rules reference it
+        if self.rules.uses_command_line() {
+            if let Some(info) = self.windows.get_mut(&hwnd) {
+                if info.command_line.is_none() {
+                    info.command_line = Some(window::get_command_line(hwnd));
+                }
+            }
+        }
+
         let info = match self.windows.get(&hwnd) {
             Some(i) => i,
             None => return,
         };
+        let empty = String::new();
+        let cmd_line = info.command_line.as_ref().unwrap_or(&empty);
         let rule_info = WindowRuleInfo {
             process_name: &info.process_name,
             class_name: &info.class_name,
             title: &info.title,
+            command_line: cmd_line,
         };
         let group_name = match self.rules.apply(&rule_info) {
             Some(name) => name.to_string(),
@@ -447,14 +462,14 @@ impl AppState {
 
     /// Try to restore a window's saved position from the position store.
     pub(crate) fn try_restore_position(&mut self, hwnd: HWND, info: &WindowInfo) {
-        let entry = match self.position_store.lookup(
-            &info.process_name,
-            &info.class_name,
-            &info.title,
-        ) {
-            Some(e) => e,
-            None => return,
-        };
+        let entry =
+            match self
+                .position_store
+                .lookup(&info.process_name, &info.class_name, &info.title)
+            {
+                Some(e) => e,
+                None => return,
+            };
 
         // Validate that a monitor exists at the saved rect
         if !position_store::monitor_exists_for_rect(&entry.rect) {
@@ -473,7 +488,12 @@ impl AppState {
                 (entry.rect.bottom as f64 * scale) as i32,
             )
         } else {
-            (entry.rect.left, entry.rect.top, entry.rect.right, entry.rect.bottom)
+            (
+                entry.rect.left,
+                entry.rect.top,
+                entry.rect.right,
+                entry.rect.bottom,
+            )
         };
 
         unsafe {
@@ -541,7 +561,11 @@ impl AppState {
             if in_hot || in_overlay || has_capture {
                 peek.leave_ticks = 0;
                 if !has_capture {
-                    overlay::update_peek_overlay(peek.overlay_hwnd, peek.target_hwnd, &self.windows);
+                    overlay::update_peek_overlay(
+                        peek.overlay_hwnd,
+                        peek.target_hwnd,
+                        &self.windows,
+                    );
                 }
                 self.peek = Some(peek);
             } else {
@@ -593,7 +617,12 @@ impl AppState {
         }
 
         // Use WindowFromPoint for z-order-aware fallback
-        let hit = unsafe { WindowFromPoint(POINT { x: cursor.x, y: cursor.y }) };
+        let hit = unsafe {
+            WindowFromPoint(POINT {
+                x: cursor.x,
+                y: cursor.y,
+            })
+        };
         if hit.is_null() {
             return None;
         }
