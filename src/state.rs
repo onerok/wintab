@@ -136,6 +136,50 @@ impl AppState {
         }
     }
 
+    /// Check virtual desktop state for all groups and hide/show overlays
+    /// as needed.  Called from on_focus_changed() as a reliable fallback
+    /// since EVENT_SYSTEM_DESKTOPSWITCH may not arrive via the hook.
+    fn sync_desktop_visibility(&mut self) {
+        let vd = match &self.vdesktop {
+            Some(vd) => vd,
+            None => return,
+        };
+
+        let group_info: Vec<_> = self
+            .overlays
+            .overlays
+            .iter()
+            .filter_map(|(&gid, &ov)| {
+                let group = self.groups.groups.get(&gid)?;
+                Some((gid, ov, group.active_hwnd()))
+            })
+            .collect();
+
+        for (gid, ov, active_hwnd) in group_info {
+            let on_current = vd.is_on_current_desktop(active_hwnd);
+            let was_hidden = self.overlays.desktop_hidden.contains(&gid);
+
+            if on_current && was_hidden {
+                self.overlays.desktop_hidden.remove(&gid);
+                overlay::update_overlay(ov, gid, &self.groups, &self.windows);
+            } else if !on_current && !was_hidden {
+                self.overlays.desktop_hidden.insert(gid);
+                unsafe {
+                    ShowWindow(ov, SW_HIDE);
+                }
+            }
+        }
+
+        // Hide peek overlay if peek target is off-desktop
+        if let Some(ref peek) = self.peek {
+            if !vd.is_on_current_desktop(peek.target_hwnd) {
+                let peek_ov = peek.overlay_hwnd;
+                self.peek = None;
+                overlay::destroy_overlay(peek_ov);
+            }
+        }
+    }
+
     pub fn on_window_created(&mut self, hwnd: HWND) {
         if self.suppress_events || !self.enabled {
             return;
@@ -248,6 +292,12 @@ impl AppState {
         if !self.enabled {
             return;
         }
+
+        // EVENT_SYSTEM_DESKTOPSWITCH is not reliably delivered via
+        // SetWinEventHook(WINEVENT_OUTOFCONTEXT), but foreground events
+        // always fire when the user switches virtual desktops.  Re-check
+        // desktop visibility here so overlays are hidden/shown promptly.
+        self.sync_desktop_visibility();
 
         if let Some(gid) = self.groups.group_of(hwnd) {
             if let Some(group) = self.groups.groups.get_mut(&gid) {

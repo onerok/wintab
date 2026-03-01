@@ -1,3 +1,4 @@
+use std::cell::{Cell, RefCell};
 use std::ptr::null_mut;
 
 use windows_sys::Win32::Foundation::HWND;
@@ -8,12 +9,15 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use crate::state;
 
-use std::cell::RefCell;
-
 const EVENT_SYSTEM_DESKTOPSWITCH: u32 = 0x0020;
 
 thread_local! {
     static HOOKS: RefCell<Vec<HWINEVENTHOOK>> = const { RefCell::new(Vec::new()) };
+    /// Guard against re-entrant hook calls.  COM calls made inside
+    /// handlers (e.g. IVirtualDesktopManager in STA) can internally pump
+    /// messages, which would re-enter this callback and panic on the
+    /// RefCell<AppState> borrow.
+    static IN_HOOK: Cell<bool> = const { Cell::new(false) };
 }
 
 pub fn install() {
@@ -70,12 +74,26 @@ unsafe extern "system" fn win_event_proc(
     _event_thread: u32,
     _event_time: u32,
 ) {
-    if id_object != 0 {
+    // Skip re-entrant calls — COM marshaling in STA can pump messages
+    // internally, which would re-enter this callback.
+    if IN_HOOK.with(|c| c.replace(true)) {
         return;
     }
 
+    dispatch_event(event, hwnd, id_object);
+
+    IN_HOOK.with(|c| c.set(false));
+}
+
+fn dispatch_event(event: u32, hwnd: HWND, id_object: i32) {
+    // EVENT_SYSTEM_DESKTOPSWITCH fires with id_object != 0 (OBJID_WINDOW is not
+    // guaranteed), so check it before the id_object filter.
     if event == EVENT_SYSTEM_DESKTOPSWITCH {
         state::with_state(|s| s.on_desktop_switch());
+        return;
+    }
+
+    if id_object != 0 {
         return;
     }
 
