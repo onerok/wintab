@@ -247,6 +247,7 @@ impl AppState {
             if !self.overlays.desktop_hidden.contains(&gid) {
                 if let Some(&ov) = self.overlays.overlays.get(&gid) {
                     overlay::update_overlay(ov, gid, &self.groups, &self.windows);
+                    overlay::refresh_tooltip(ov);
                 }
             }
         }
