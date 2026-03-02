@@ -1,52 +1,7 @@
-# WinTab Release Milestones
+# WinTab Backlog
 
-> MVP (M1 + M2) is complete: core tab engine, window grouping, drag-and-drop, peek.
-> Below is the go-forward plan ranked by importance.
-
----
-
-## M3: Stability & Core UX — Done
-
-Bug fixes and small UX wins that make the MVP feel solid before adding features.
-
-| # | Item | Type | Effort | Status |
-|---|------|------|--------|--------|
-| 1 | Hide tabs when switching virtual desktops | Bug | Small | Done |
-| 2 | Peek z-order awareness | Bug | Small | Done |
-| 3 | Show full title on hover | Feature | Small | Done |
-
----
-
-## M4: YAML Configuration — Done
-
-Barebones file-based config. No UI — users edit `%APPDATA%\WinTab\config.yaml` directly.
-
-| # | Item | Type | Effort | Status |
-|---|------|------|--------|--------|
-| 4 | YAML config file with rules engine | Feature | Small | Done |
-
----
-
-## M5: Polish & Interactions — Done
-
-Rich interactions that make tab groups genuinely powerful.
-
-| # | Item | Type | Effort | Status |
-|---|------|------|--------|--------|
-| 5 | Tab preview on hover | Feature | Medium | Done |
-| 6 | Remember last position and size | Feature | Medium | Done |
-
----
-
-## M6: Automation & Rules Engine — Done
-
-Power-user features for automatic workflow setup.
-
-| # | Item | Type | Effort | Status |
-|---|------|------|--------|--------|
-| 7 | Automatic groups (rules engine) | Feature | Large | Done |
-
-
+> M1–M6 complete (MVP, stability, config, polish, automation).
+> All remaining work is listed below.
 
 ---
 
@@ -61,6 +16,7 @@ Power-user features for automatic workflow setup.
 - [New tab button](new-tab-button.md) (+) at end of tab bar
 - [Middle-click to close tab](middle-click-close.md)
 - [Tab coloring](tab-coloring.md) (system accent / per-app / custom)
+- [Sub-group color coding](sub-group-coloring.md) (per-tab color rules based on title/process pattern matching)
 - [Tab position configuration](tab-position-config.md) (Top / Bottom)
 - [Whitelist/blacklist exception management](whitelist-blacklist.md)
 - [Drag file over tab to switch](drag-file-over-tab.md)
@@ -74,16 +30,3 @@ Power-user features for automatic workflow setup.
 - [Tray icon left-click / double-click](tray-icon-click.md) opens config dialog
 - [New tab from running windows](new-tab-from-running.md) (`Ctrl+Win+T`) — window picker/selector UI
 - [Window picker tool](window-picker-tool.md) (crosshair for rule creation)
-
----
-
-## Summary
-
-| Milestone | Items | Status |
-|-----------|-------|--------|
-| **M3: Stability** | 3 | Done |
-| **M4: YAML Config** | 1 | Done |
-| **M5: Polish** | 2 | Done |
-| **M6: Automation** | 1 | Done |
-| **Gaps** | 11 | Todo |
-| **Future** | 22+ | Todo |
