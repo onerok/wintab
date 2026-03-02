@@ -60,6 +60,7 @@ fn main() {
         let msg_hwnd = create_msg_window();
 
         state::with_state(|s| {
+            s.msg_hwnd = msg_hwnd;
             s.init();
         });
 
@@ -156,6 +157,11 @@ unsafe extern "system" fn msg_wnd_proc(
         }
         WM_TIMER => {
             state::with_state(|s| s.on_peek_timer());
+            0
+        }
+        m if m == state::WM_WINTAB_DEFERRED_RESTORE => {
+            let target_hwnd = wparam as HWND;
+            state::with_state(|s| s.apply_deferred_restore(target_hwnd));
             0
         }
         WM_DESTROY => {
