@@ -36,6 +36,11 @@ thread_local! {
     static DROP_PREVIEW: RefCell<Option<DropPreview>> = const { RefCell::new(None) };
 }
 
+/// Returns true if a drag operation is currently active (past the threshold).
+pub fn is_dragging() -> bool {
+    DRAG.with(|d| d.borrow().as_ref().map(|ds| ds.dragging).unwrap_or(false))
+}
+
 pub fn on_mouse_down(overlay_hwnd: HWND, group_id: GroupId, tab_index: usize, x: i32, y: i32) {
     let mut pt = POINT { x, y };
     unsafe {
@@ -357,5 +362,51 @@ mod tests {
     #[test]
     fn threshold_exceeded_both() {
         assert!(exceeds_drag_threshold(10, 10));
+    }
+
+    // --- is_dragging ---
+
+    fn fake_hwnd(n: usize) -> HWND {
+        n as HWND
+    }
+
+    #[test]
+    fn is_dragging_no_state() {
+        DRAG.with(|d| *d.borrow_mut() = None);
+        assert!(!is_dragging());
+    }
+
+    #[test]
+    fn is_dragging_pending_drag() {
+        DRAG.with(|d| {
+            *d.borrow_mut() = Some(DragState {
+                source_overlay: fake_hwnd(1),
+                source_group: 1,
+                source_tab: 0,
+                start_x: 100,
+                start_y: 100,
+                dragging: false,
+                peek_target: std::ptr::null_mut(),
+            });
+        });
+        assert!(!is_dragging());
+        DRAG.with(|d| *d.borrow_mut() = None);
+    }
+
+    #[test]
+    fn is_dragging_active_drag() {
+        DRAG.with(|d| {
+            *d.borrow_mut() = Some(DragState {
+                source_overlay: fake_hwnd(1),
+                source_group: 1,
+                source_tab: 0,
+                start_x: 100,
+                start_y: 100,
+                dragging: true,
+                peek_target: std::ptr::null_mut(),
+            });
+        });
+        assert!(is_dragging());
+        DRAG.with(|d| *d.borrow_mut() = None);
     }
 }
