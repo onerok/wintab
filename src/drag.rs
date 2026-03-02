@@ -254,10 +254,16 @@ fn handle_peek_drop(drag: DragState, x: i32, y: i32) {
 }
 
 fn update_source_overlay(s: &mut crate::state::AppState, source_group: GroupId) {
-    s.overlays.refresh_overlay(source_group, &s.groups, &s.windows);
+    s.overlays
+        .refresh_overlay(source_group, &s.groups, &s.windows);
 }
 
-fn update_drop_preview(screen_pt: POINT, peek_target: HWND, source_group: GroupId, source_tab: usize) {
+fn update_drop_preview(
+    screen_pt: POINT,
+    peek_target: HWND,
+    source_group: GroupId,
+    source_tab: usize,
+) {
     let target = state::with_state(|s| {
         // Resolve the dragged HWND to exclude it from targets
         let dragged_hwnd = if !peek_target.is_null() {

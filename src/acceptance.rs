@@ -15,9 +15,9 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use crate::hook;
 use crate::overlay;
+use crate::screenshot;
 use crate::state;
 use crate::window;
-use crate::screenshot;
 use crate::window::WindowInfo;
 
 /// Pump the Win32 message queue for the given duration.
@@ -133,7 +133,10 @@ fn acceptance_group_lifecycle() {
 
     // 8. Assert overlay exists and is visible
     let ov_hwnd = state::with_state(|s| {
-        *s.overlays.overlays.get(&group_id).expect("Overlay not found in state")
+        *s.overlays
+            .overlays
+            .get(&group_id)
+            .expect("Overlay not found in state")
     });
     unsafe {
         assert_ne!(IsWindowVisible(ov_hwnd), 0, "Overlay not visible");
@@ -297,12 +300,13 @@ fn acceptance_add_third_window_to_group() {
 
     // Verify 3-tab group
     state::with_state(|s| {
-        let group = s.groups.groups.get(&group_id).expect("Group should exist after add");
+        let group = s
+            .groups
+            .groups
+            .get(&group_id)
+            .expect("Group should exist after add");
         assert_eq!(group.tabs.len(), 3, "Group should have 3 tabs after add");
-        assert!(
-            group.tabs.contains(&win3),
-            "win3 should be in the group"
-        );
+        assert!(group.tabs.contains(&win3), "win3 should be in the group");
         // win3 should be the new active tab (add switches to newly added)
         assert_eq!(
             group.active_hwnd(),
@@ -381,7 +385,10 @@ fn acceptance_peek_cleared_after_group_creation() {
 
     // Verify peek is active
     state::with_state(|s| {
-        assert!(s.peek.is_some(), "Peek should be active before group creation");
+        assert!(
+            s.peek.is_some(),
+            "Peek should be active before group creation"
+        );
     });
 
     // Now create a group (simulating the drag completion).
@@ -530,20 +537,12 @@ fn acceptance_peek_candidate_excludes_grouped() {
     pump_messages(Duration::from_millis(200));
 
     // Group win1 + win2
-    let group_id = state::with_state(|s| {
-        s.groups.create_group(win1, win2)
-    });
+    let group_id = state::with_state(|s| s.groups.create_group(win1, win2));
 
     // Verify: grouped windows have a group, ungrouped does not
     state::with_state(|s| {
-        assert!(
-            s.groups.group_of(win1).is_some(),
-            "win1 should be grouped"
-        );
-        assert!(
-            s.groups.group_of(win2).is_some(),
-            "win2 should be grouped"
-        );
+        assert!(s.groups.group_of(win1).is_some(), "win1 should be grouped");
+        assert!(s.groups.group_of(win2).is_some(), "win2 should be grouped");
         assert!(
             s.groups.group_of(win3).is_none(),
             "win3 should NOT be grouped (eligible for peek)"
@@ -822,9 +821,7 @@ fn acceptance_minimize_restore_group() {
     pump_messages(Duration::from_millis(200));
 
     // Get overlay HWND
-    let ov_hwnd = state::with_state(|s| {
-        *s.overlays.overlays.get(&group_id).unwrap()
-    });
+    let ov_hwnd = state::with_state(|s| *s.overlays.overlays.get(&group_id).unwrap());
 
     // Verify overlay is visible
     unsafe {
@@ -983,10 +980,7 @@ fn acceptance_title_change_updates_state() {
 
     // Verify original title
     state::with_state(|s| {
-        assert_eq!(
-            s.windows.get(&win1).unwrap().title,
-            "Original Title"
-        );
+        assert_eq!(s.windows.get(&win1).unwrap().title, "Original Title");
     });
 
     // Change the title
@@ -1002,10 +996,7 @@ fn acceptance_title_change_updates_state() {
 
     // Verify updated title
     state::with_state(|s| {
-        assert_eq!(
-            s.windows.get(&win1).unwrap().title,
-            "Updated Title"
-        );
+        assert_eq!(s.windows.get(&win1).unwrap().title, "Updated Title");
     });
 
     // Cleanup
@@ -1238,8 +1229,14 @@ fn acceptance_peek_respects_zorder() {
             test_class.as_ptr(),
             title_back.as_ptr(),
             WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-            100, 100, 400, 300,
-            0 as _, 0 as _, instance, ptr::null(),
+            100,
+            100,
+            400,
+            300,
+            0 as _,
+            0 as _,
+            instance,
+            ptr::null(),
         )
     };
     let win_front = unsafe {
@@ -1248,8 +1245,14 @@ fn acceptance_peek_respects_zorder() {
             test_class.as_ptr(),
             title_front.as_ptr(),
             WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-            100, 100, 400, 300,
-            0 as _, 0 as _, instance, ptr::null(),
+            100,
+            100,
+            400,
+            300,
+            0 as _,
+            0 as _,
+            instance,
+            ptr::null(),
         )
     };
     assert!(!win_back.is_null());
@@ -1265,12 +1268,7 @@ fn acceptance_peek_respects_zorder() {
     // Bring win_front to the topmost to ensure it's above everything
     unsafe {
         SetForegroundWindow(win_front);
-        SetWindowPos(
-            win_front,
-            HWND_TOPMOST,
-            0, 0, 0, 0,
-            SWP_NOMOVE | SWP_NOSIZE,
-        );
+        SetWindowPos(win_front, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
     }
     pump_messages(Duration::from_millis(100));
 
@@ -1283,9 +1281,7 @@ fn acceptance_peek_respects_zorder() {
             y: (rect.top + rect.bottom) / 2,
         }
     };
-    let found = state::with_state(|s| {
-        s.find_managed_window_at(center)
-    });
+    let found = state::with_state(|s| s.find_managed_window_at(center));
 
     // Should find win_front (the topmost), not win_back
     assert_eq!(
@@ -1334,9 +1330,7 @@ fn acceptance_toggle_enabled() {
 
     pump_messages(Duration::from_millis(200));
 
-    let ov_hwnd = state::with_state(|s| {
-        *s.overlays.overlays.get(&group_id).unwrap()
-    });
+    let ov_hwnd = state::with_state(|s| *s.overlays.overlays.get(&group_id).unwrap());
 
     // Verify initially enabled
     state::with_state(|s| {
@@ -1428,9 +1422,7 @@ fn acceptance_desktop_switch_overlay_visibility() {
 
     pump_messages(Duration::from_millis(200));
 
-    let ov_hwnd = state::with_state(|s| {
-        *s.overlays.overlays.get(&group_id).unwrap()
-    });
+    let ov_hwnd = state::with_state(|s| *s.overlays.overlays.get(&group_id).unwrap());
 
     // Call on_desktop_switch — since test windows are on current desktop,
     // overlay should remain visible
@@ -1536,7 +1528,11 @@ fn acceptance_tooltip_created_with_overlay() {
     // Tooltip should have been created
     assert!(!tooltip_hwnd.is_null(), "Tooltip HWND should not be null");
     unsafe {
-        assert_ne!(IsWindow(tooltip_hwnd), 0, "Tooltip should be a valid window");
+        assert_ne!(
+            IsWindow(tooltip_hwnd),
+            0,
+            "Tooltip should be a valid window"
+        );
     }
 
     // Tooltip should have a registered tool (TTM_ADDTOOLW must have succeeded)
@@ -1562,11 +1558,7 @@ fn acceptance_tooltip_created_with_overlay() {
             0,
             "Tooltip should be destroyed when overlay is destroyed"
         );
-        assert_eq!(
-            IsWindow(ov_hwnd),
-            0,
-            "Overlay should be destroyed"
-        );
+        assert_eq!(IsWindow(ov_hwnd), 0, "Overlay should be destroyed");
     }
 
     // Cleanup
@@ -1621,13 +1613,8 @@ fn acceptance_tooltip_shows_truncated_title() {
     assert!(!tooltip_hwnd.is_null(), "Tooltip should be created");
 
     // Verify the title is actually in state
-    let title_in_state = state::with_state(|s| {
-        s.windows.get(&win1).map(|info| info.title.clone())
-    });
-    assert!(
-        title_in_state.is_some(),
-        "Window title should be in state"
-    );
+    let title_in_state = state::with_state(|s| s.windows.get(&win1).map(|info| info.title.clone()));
+    assert!(title_in_state.is_some(), "Window title should be in state");
     assert!(
         title_in_state.as_ref().unwrap().len() > 20,
         "Title should be long, got: {:?}",
@@ -1644,12 +1631,7 @@ fn acceptance_tooltip_shows_truncated_title() {
     nmdi.hdr.code = TTN_GETDISPINFOW;
 
     unsafe {
-        SendMessageW(
-            ov_hwnd,
-            WM_NOTIFY,
-            0,
-            &mut nmdi as *mut _ as isize,
-        );
+        SendMessageW(ov_hwnd, WM_NOTIFY, 0, &mut nmdi as *mut _ as isize);
     }
 
     // szText should have been filled with the truncated title
@@ -1725,12 +1707,22 @@ fn acceptance_rules_auto_group_two_matching_windows() {
                     matcher: Matcher::Equals("test_app.exe".into(), false),
                 }],
             }],
+            preview_config: PreviewConfig::default(),
         };
 
         // Insert windows — win1 and win2 match, win_solo doesn't
-        s.windows.insert(win1, make_window_info_with_meta(win1, "test_app.exe", "TestClass"));
-        s.windows.insert(win2, make_window_info_with_meta(win2, "test_app.exe", "TestClass"));
-        s.windows.insert(win_solo, make_window_info_with_meta(win_solo, "other.exe", "OtherClass"));
+        s.windows.insert(
+            win1,
+            make_window_info_with_meta(win1, "test_app.exe", "TestClass"),
+        );
+        s.windows.insert(
+            win2,
+            make_window_info_with_meta(win2, "test_app.exe", "TestClass"),
+        );
+        s.windows.insert(
+            win_solo,
+            make_window_info_with_meta(win_solo, "other.exe", "OtherClass"),
+        );
 
         // Apply rules: win1 becomes pending singleton (no group yet)
         s.apply_rules(win1);
@@ -1742,10 +1734,7 @@ fn acceptance_rules_auto_group_two_matching_windows() {
             s.groups.group_of(win1).is_none(),
             "Singleton should NOT be in a TabGroup"
         );
-        assert!(
-            s.overlays.overlays.is_empty(),
-            "No overlay for singletons"
-        );
+        assert!(s.overlays.overlays.is_empty(), "No overlay for singletons");
 
         // Apply rules: win2 triggers group creation
         s.apply_rules(win2);
@@ -1784,7 +1773,10 @@ fn acceptance_rules_auto_group_two_matching_windows() {
         s.groups.remove_from_group(win1);
         s.groups.remove_from_group(win2);
         s.windows.clear();
-        s.rules = RulesEngine { groups: Vec::new() };
+        s.rules = RulesEngine {
+            groups: Vec::new(),
+            preview_config: PreviewConfig::default(),
+        };
     });
 
     unsafe {
@@ -1821,11 +1813,21 @@ fn acceptance_rules_third_window_joins_existing_group() {
                     matcher: Matcher::Equals("editor.exe".into(), false),
                 }],
             }],
+            preview_config: PreviewConfig::default(),
         };
 
-        s.windows.insert(win1, make_window_info_with_meta(win1, "editor.exe", "EditorClass"));
-        s.windows.insert(win2, make_window_info_with_meta(win2, "editor.exe", "EditorClass"));
-        s.windows.insert(win3, make_window_info_with_meta(win3, "editor.exe", "EditorClass"));
+        s.windows.insert(
+            win1,
+            make_window_info_with_meta(win1, "editor.exe", "EditorClass"),
+        );
+        s.windows.insert(
+            win2,
+            make_window_info_with_meta(win2, "editor.exe", "EditorClass"),
+        );
+        s.windows.insert(
+            win3,
+            make_window_info_with_meta(win3, "editor.exe", "EditorClass"),
+        );
 
         s.apply_rules(win1); // pending
         s.apply_rules(win2); // creates group
@@ -1852,7 +1854,10 @@ fn acceptance_rules_third_window_joins_existing_group() {
         s.groups.remove_from_group(win2);
         s.groups.remove_from_group(win3);
         s.windows.clear();
-        s.rules = RulesEngine { groups: Vec::new() };
+        s.rules = RulesEngine {
+            groups: Vec::new(),
+            preview_config: PreviewConfig::default(),
+        };
     });
 
     unsafe {
@@ -1887,21 +1892,36 @@ fn acceptance_rules_disabled_rule_skipped() {
                     matcher: Matcher::Equals("app.exe".into(), false),
                 }],
             }],
+            preview_config: PreviewConfig::default(),
         };
 
-        s.windows.insert(win1, make_window_info_with_meta(win1, "app.exe", "C"));
-        s.windows.insert(win2, make_window_info_with_meta(win2, "app.exe", "C"));
+        s.windows
+            .insert(win1, make_window_info_with_meta(win1, "app.exe", "C"));
+        s.windows
+            .insert(win2, make_window_info_with_meta(win2, "app.exe", "C"));
 
         s.apply_rules(win1);
         s.apply_rules(win2);
 
-        assert!(s.groups.group_of(win1).is_none(), "Disabled rule should not match");
-        assert!(s.groups.group_of(win2).is_none(), "Disabled rule should not match");
-        assert!(s.groups.pending_rules.is_empty(), "No pending entries for disabled rules");
+        assert!(
+            s.groups.group_of(win1).is_none(),
+            "Disabled rule should not match"
+        );
+        assert!(
+            s.groups.group_of(win2).is_none(),
+            "Disabled rule should not match"
+        );
+        assert!(
+            s.groups.pending_rules.is_empty(),
+            "No pending entries for disabled rules"
+        );
 
         // Cleanup
         s.windows.clear();
-        s.rules = RulesEngine { groups: Vec::new() };
+        s.rules = RulesEngine {
+            groups: Vec::new(),
+            preview_config: PreviewConfig::default(),
+        };
     });
 
     unsafe {
@@ -1933,9 +1953,11 @@ fn acceptance_pending_singleton_cleaned_on_destroy() {
                     matcher: Matcher::Equals("pending.exe".into(), false),
                 }],
             }],
+            preview_config: PreviewConfig::default(),
         };
 
-        s.windows.insert(win1, make_window_info_with_meta(win1, "pending.exe", "C"));
+        s.windows
+            .insert(win1, make_window_info_with_meta(win1, "pending.exe", "C"));
         s.apply_rules(win1);
 
         assert!(s.groups.pending_rules.contains_key("PendingTest"));
@@ -1948,7 +1970,10 @@ fn acceptance_pending_singleton_cleaned_on_destroy() {
         );
 
         // Cleanup
-        s.rules = RulesEngine { groups: Vec::new() };
+        s.rules = RulesEngine {
+            groups: Vec::new(),
+            preview_config: PreviewConfig::default(),
+        };
     });
 
     unsafe {
@@ -2020,9 +2045,12 @@ fn acceptance_position_restore_moves_window() {
          DPI={} scale={:.2}\n  \
          Expected top-left: ({},{})\n  \
          Actual top-left:   ({},{})",
-        current_dpi, scale,
-        expected_left, expected_top,
-        actual_rect.left, actual_rect.top,
+        current_dpi,
+        scale,
+        expected_left,
+        expected_top,
+        actual_rect.left,
+        actual_rect.top,
     );
 
     // Cleanup
@@ -2048,12 +2076,23 @@ fn acceptance_position_recorded_on_move() {
     pump_messages(Duration::from_millis(200));
 
     state::with_state(|s| {
-        s.windows.insert(win1, make_window_info_with_meta(win1, "move_test.exe", "MoveClass"));
+        s.windows.insert(
+            win1,
+            make_window_info_with_meta(win1, "move_test.exe", "MoveClass"),
+        );
     });
 
     // Move the window
     unsafe {
-        SetWindowPos(win1, 0 as _, 200, 150, 600, 400, SWP_NOACTIVATE | SWP_NOZORDER);
+        SetWindowPos(
+            win1,
+            0 as _,
+            200,
+            150,
+            600,
+            400,
+            SWP_NOACTIVATE | SWP_NOZORDER,
+        );
     }
     pump_messages(Duration::from_millis(100));
 
@@ -2151,7 +2190,10 @@ fn acceptance_rules_e2e_auto_group() {
 
     // Screenshot 01: two windows discovered, no overlay yet
     let first_hwnd = discovered[0].hwnd;
-    screenshot::capture_window(first_hwnd, "evidence/rules_auto_group/01_windows_discovered.png");
+    screenshot::capture_window(
+        first_hwnd,
+        "evidence/rules_auto_group/01_windows_discovered.png",
+    );
 
     // Phase 2: Apply rules
     state::with_state(|s| {
@@ -2166,6 +2208,7 @@ fn acceptance_rules_e2e_auto_group() {
                     matcher: Matcher::Equals("dummy_window.exe".into(), false),
                 }],
             }],
+            preview_config: PreviewConfig::default(),
         };
 
         for info in &discovered {
@@ -2184,10 +2227,7 @@ fn acceptance_rules_e2e_auto_group() {
         let gid_0 = s.groups.group_of(discovered[0].hwnd);
         let gid_1 = s.groups.group_of(discovered[1].hwnd);
         assert!(gid_0.is_some(), "First window should be in a group");
-        assert_eq!(
-            gid_0, gid_1,
-            "Both windows should be in the same group"
-        );
+        assert_eq!(gid_0, gid_1, "Both windows should be in the same group");
 
         let gid = gid_0.unwrap();
         let group = s.groups.groups.get(&gid).expect("Group should exist");
@@ -2201,9 +2241,7 @@ fn acceptance_rules_e2e_auto_group() {
         gid
     });
 
-    let ov_hwnd = state::with_state(|s| {
-        *s.overlays.overlays.get(&group_id).unwrap()
-    });
+    let ov_hwnd = state::with_state(|s| *s.overlays.overlays.get(&group_id).unwrap());
     unsafe {
         assert_ne!(
             IsWindowVisible(ov_hwnd),
@@ -2213,13 +2251,8 @@ fn acceptance_rules_e2e_auto_group() {
     }
 
     // Screenshot 02: overlay tab bar visible after auto-grouping
-    let active_hwnd = state::with_state(|s| {
-        s.groups.groups.get(&group_id).unwrap().active_hwnd()
-    });
-    screenshot::capture_window(
-        active_hwnd,
-        "evidence/rules_auto_group/02_auto_grouped.png",
-    );
+    let active_hwnd = state::with_state(|s| s.groups.groups.get(&group_id).unwrap().active_hwnd());
+    screenshot::capture_window(active_hwnd, "evidence/rules_auto_group/02_auto_grouped.png");
 
     // Phase 4: Tab switch
     state::with_state(|s| {
@@ -2255,7 +2288,10 @@ fn acceptance_rules_e2e_auto_group() {
         s.groups.remove_from_group(discovered[0].hwnd);
         s.groups.remove_from_group(discovered[1].hwnd);
         s.windows.clear();
-        s.rules = crate::config::RulesEngine { groups: Vec::new() };
+        s.rules = crate::config::RulesEngine {
+            groups: Vec::new(),
+            preview_config: crate::config::PreviewConfig::default(),
+        };
         s.groups.pending_rules.clear();
         s.groups.named_groups.clear();
         s.shutdown();
@@ -2343,10 +2379,17 @@ fn acceptance_e2e_group_lifecycle() {
     pump_messages(Duration::from_millis(200));
 
     let ov_hwnd = state::with_state(|s| {
-        *s.overlays.overlays.get(&group_id).expect("Overlay not found")
+        *s.overlays
+            .overlays
+            .get(&group_id)
+            .expect("Overlay not found")
     });
     unsafe {
-        assert_ne!(IsWindowVisible(ov_hwnd), 0, "Overlay not visible after grouping");
+        assert_ne!(
+            IsWindowVisible(ov_hwnd),
+            0,
+            "Overlay not visible after grouping"
+        );
     }
 
     // Screenshot 01: group created with overlay
@@ -2368,8 +2411,16 @@ fn acceptance_e2e_group_lifecycle() {
     pump_messages(Duration::from_millis(200));
 
     unsafe {
-        assert_ne!(IsWindowVisible(win1), 0, "win1 should be visible after switch");
-        assert_eq!(IsWindowVisible(win2), 0, "win2 should be hidden after switch");
+        assert_ne!(
+            IsWindowVisible(win1),
+            0,
+            "win1 should be visible after switch"
+        );
+        assert_eq!(
+            IsWindowVisible(win2),
+            0,
+            "win2 should be hidden after switch"
+        );
     }
 
     // Update overlay after switch
@@ -2393,15 +2444,26 @@ fn acceptance_e2e_group_lifecycle() {
 
     // Both windows should be visible (ungrouped)
     unsafe {
-        assert_ne!(IsWindowVisible(win1), 0, "win1 should be visible after ungroup");
-        assert_ne!(IsWindowVisible(win2), 0, "win2 should be visible after ungroup");
+        assert_ne!(
+            IsWindowVisible(win1),
+            0,
+            "win1 should be visible after ungroup"
+        );
+        assert_ne!(
+            IsWindowVisible(win2),
+            0,
+            "win2 should be visible after ungroup"
+        );
     }
 
     // No group references remain
     state::with_state(|s| {
         assert!(s.groups.group_of(win1).is_none(), "win1 still in a group");
         assert!(s.groups.group_of(win2).is_none(), "win2 still in a group");
-        assert!(!s.groups.groups.contains_key(&group_id), "Group still exists");
+        assert!(
+            !s.groups.groups.contains_key(&group_id),
+            "Group still exists"
+        );
     });
 
     // Overlay destroyed
@@ -2503,9 +2565,7 @@ fn acceptance_e2e_minimize_restore() {
 
     pump_messages(Duration::from_millis(200));
 
-    let ov_hwnd = state::with_state(|s| {
-        *s.overlays.overlays.get(&group_id).unwrap()
-    });
+    let ov_hwnd = state::with_state(|s| *s.overlays.overlays.get(&group_id).unwrap());
 
     // Verify overlay visible
     unsafe {
@@ -2618,14 +2678,13 @@ fn acceptance_desktop_switch_hides_overlay_through_focus_change() {
 
     pump_messages(Duration::from_millis(200));
 
-    let ov_hwnd = state::with_state(|s| {
-        *s.overlays.overlays.get(&group_id).unwrap()
-    });
+    let ov_hwnd = state::with_state(|s| *s.overlays.overlays.get(&group_id).unwrap());
 
     // Verify overlay is visible
     unsafe {
         assert_ne!(
-            IsWindowVisible(ov_hwnd), 0,
+            IsWindowVisible(ov_hwnd),
+            0,
             "Step 1: Overlay should be visible after group creation"
         );
     }
@@ -2645,12 +2704,16 @@ fn acceptance_desktop_switch_hides_overlay_through_focus_change() {
     // Verify overlay is hidden after desktop switch
     unsafe {
         assert_eq!(
-            IsWindowVisible(ov_hwnd), 0,
+            IsWindowVisible(ov_hwnd),
+            0,
             "Step 2: Overlay should be hidden after desktop switch (windows on other desktop)"
         );
     }
 
-    screenshot::capture_window(win_other, "evidence/desktop_switch_bug/02_overlay_hidden_after_switch.png");
+    screenshot::capture_window(
+        win_other,
+        "evidence/desktop_switch_bug/02_overlay_hidden_after_switch.png",
+    );
 
     // Step 3: THE BUG SCENARIO — simulate focus change on the new desktop
     // Before the fix, this would re-show the overlay via update_all() + SWP_SHOWWINDOW
@@ -2662,12 +2725,16 @@ fn acceptance_desktop_switch_hides_overlay_through_focus_change() {
 
     unsafe {
         assert_eq!(
-            IsWindowVisible(ov_hwnd), 0,
+            IsWindowVisible(ov_hwnd),
+            0,
             "Step 3 CRITICAL: Overlay must stay hidden after focus change on different desktop"
         );
     }
 
-    screenshot::capture_window(win_other, "evidence/desktop_switch_bug/03_still_hidden_after_focus.png");
+    screenshot::capture_window(
+        win_other,
+        "evidence/desktop_switch_bug/03_still_hidden_after_focus.png",
+    );
 
     // Step 4: Simulate title change on the hidden window — another re-show vector
     state::with_state(|s| {
@@ -2678,7 +2745,8 @@ fn acceptance_desktop_switch_hides_overlay_through_focus_change() {
 
     unsafe {
         assert_eq!(
-            IsWindowVisible(ov_hwnd), 0,
+            IsWindowVisible(ov_hwnd),
+            0,
             "Step 4: Overlay must stay hidden after title change on hidden window"
         );
     }
@@ -2692,7 +2760,8 @@ fn acceptance_desktop_switch_hides_overlay_through_focus_change() {
 
     unsafe {
         assert_eq!(
-            IsWindowVisible(ov_hwnd), 0,
+            IsWindowVisible(ov_hwnd),
+            0,
             "Step 5: Overlay must stay hidden after window move on hidden window"
         );
     }
@@ -2709,7 +2778,8 @@ fn acceptance_desktop_switch_hides_overlay_through_focus_change() {
 
     unsafe {
         assert_ne!(
-            IsWindowVisible(ov_hwnd), 0,
+            IsWindowVisible(ov_hwnd),
+            0,
             "Step 6: Overlay should reappear when switching back to the original desktop"
         );
     }
@@ -2834,7 +2904,9 @@ fn acceptance_e2e_real_desktop_switch() {
             .into_iter()
             .filter(|info| {
                 let mut pid = 0u32;
-                unsafe { GetWindowThreadProcessId(info.hwnd, &mut pid); }
+                unsafe {
+                    GetWindowThreadProcessId(info.hwnd, &mut pid);
+                }
                 pid == child_pid
             })
             .collect();
@@ -2869,14 +2941,20 @@ fn acceptance_e2e_real_desktop_switch() {
     pump_messages(Duration::from_millis(300));
 
     let ov_hwnd = state::with_state(|s| {
-        *s.overlays.overlays.get(&group_id).expect("Overlay not found")
+        *s.overlays
+            .overlays
+            .get(&group_id)
+            .expect("Overlay not found")
     });
 
     // Verify overlay is visible
     unsafe {
         assert_ne!(IsWindowVisible(ov_hwnd), 0, "Overlay should be visible");
     }
-    screenshot::capture_window(win2, "evidence/e2e_real_desktop_switch/01_overlay_visible.png");
+    screenshot::capture_window(
+        win2,
+        "evidence/e2e_real_desktop_switch/01_overlay_visible.png",
+    );
 
     // Save the window rect so we can screenshot the same region after switching desktops
     let win2_rect = window::get_window_rect(win2);
@@ -2888,12 +2966,20 @@ fn acceptance_e2e_real_desktop_switch() {
 
     // Verify VDesktopManager reports windows on current desktop
     let on_current = state::with_state(|s| {
-        s.vdesktop.as_ref().map(|vd| vd.is_on_current_desktop(win1)).unwrap_or(false)
+        s.vdesktop
+            .as_ref()
+            .map(|vd| vd.is_on_current_desktop(win1))
+            .unwrap_or(false)
     });
-    assert!(on_current, "Windows should be on current desktop before switch");
+    assert!(
+        on_current,
+        "Windows should be on current desktop before switch"
+    );
 
     // Phase 3: Switch to next virtual desktop (Ctrl+Win+Right)
-    unsafe { switch_virtual_desktop(VK_RIGHT); }
+    unsafe {
+        switch_virtual_desktop(VK_RIGHT);
+    }
 
     // Wait for the desktop switch animation to complete
     thread::sleep(Duration::from_secs(2));
@@ -2907,7 +2993,10 @@ fn acceptance_e2e_real_desktop_switch() {
         pump_messages(Duration::from_millis(200));
 
         active_on_current_after = state::with_state(|s| {
-            s.vdesktop.as_ref().map(|vd| vd.is_on_current_desktop(win2)).unwrap_or(true)
+            s.vdesktop
+                .as_ref()
+                .map(|vd| vd.is_on_current_desktop(win2))
+                .unwrap_or(true)
         });
 
         if !active_on_current_after {
@@ -2922,9 +3011,7 @@ fn acceptance_e2e_real_desktop_switch() {
 
     // Phase 4: Record state
     let overlay_visible_after_switch = unsafe { IsWindowVisible(ov_hwnd) != 0 };
-    let desktop_hidden_set = state::with_state(|s| {
-        s.overlays.desktop_hidden.contains(&group_id)
-    });
+    let desktop_hidden_set = state::with_state(|s| s.overlays.desktop_hidden.contains(&group_id));
 
     // Diagnostic output for CI/evidence
     eprintln!(
@@ -2934,10 +3021,18 @@ fn acceptance_e2e_real_desktop_switch() {
 
     // Screenshot at the EXACT location where the dummy windows were —
     // if the overlay is still visible, this will show the phantom tabs
-    screenshot::capture_region(cap_x, cap_y, cap_w, cap_h, "evidence/e2e_real_desktop_switch/02_after_switch.png");
+    screenshot::capture_region(
+        cap_x,
+        cap_y,
+        cap_w,
+        cap_h,
+        "evidence/e2e_real_desktop_switch/02_after_switch.png",
+    );
 
     // Phase 5: Switch BACK (Ctrl+Win+Left) — always do this before asserting
-    unsafe { switch_virtual_desktop(VK_LEFT); }
+    unsafe {
+        switch_virtual_desktop(VK_LEFT);
+    }
     thread::sleep(Duration::from_secs(2));
 
     // Poll until COM reports active window (win2) back on current desktop
@@ -2945,7 +3040,10 @@ fn acceptance_e2e_real_desktop_switch() {
     while std::time::Instant::now() < poll_deadline {
         pump_messages(Duration::from_millis(200));
         let back = state::with_state(|s| {
-            s.vdesktop.as_ref().map(|vd| vd.is_on_current_desktop(win2)).unwrap_or(false)
+            s.vdesktop
+                .as_ref()
+                .map(|vd| vd.is_on_current_desktop(win2))
+                .unwrap_or(false)
         });
         if back {
             break;
@@ -2958,7 +3056,10 @@ fn acceptance_e2e_real_desktop_switch() {
     pump_messages(Duration::from_millis(300));
 
     // Screenshot after switching back
-    screenshot::capture_window(win2, "evidence/e2e_real_desktop_switch/03_after_switch_back.png");
+    screenshot::capture_window(
+        win2,
+        "evidence/e2e_real_desktop_switch/03_after_switch_back.png",
+    );
 
     let overlay_visible_after_return = unsafe { IsWindowVisible(ov_hwnd) != 0 };
 
@@ -3015,7 +3116,10 @@ fn acceptance_e2e_phantom_screenshot() {
         .join("target")
         .join("debug")
         .join("dummy_window.exe");
-    assert!(dummy_path.exists(), "Run `cargo build --bin dummy_window` first.");
+    assert!(
+        dummy_path.exists(),
+        "Run `cargo build --bin dummy_window` first."
+    );
 
     // Spawn 2 dummy windows
     let mut child = Command::new(&dummy_path)
@@ -3037,7 +3141,9 @@ fn acceptance_e2e_phantom_screenshot() {
             .into_iter()
             .filter(|info| {
                 let mut pid = 0u32;
-                unsafe { GetWindowThreadProcessId(info.hwnd, &mut pid); }
+                unsafe {
+                    GetWindowThreadProcessId(info.hwnd, &mut pid);
+                }
                 pid == child_pid
             })
             .collect();
@@ -3078,12 +3184,23 @@ fn acceptance_e2e_phantom_screenshot() {
     let cap_h = (rect.bottom - rect.top) + overlay::TAB_HEIGHT + margin * 2;
 
     // Screenshot BEFORE: proves overlay is there
-    screenshot::capture_region(cap_x, cap_y, cap_w, cap_h, "evidence/phantom_test/01_before_switch.png");
-    eprintln!("  Captured 01_before_switch.png at ({},{}) {}x{}", cap_x, cap_y, cap_w, cap_h);
+    screenshot::capture_region(
+        cap_x,
+        cap_y,
+        cap_w,
+        cap_h,
+        "evidence/phantom_test/01_before_switch.png",
+    );
+    eprintln!(
+        "  Captured 01_before_switch.png at ({},{}) {}x{}",
+        cap_x, cap_y, cap_w, cap_h
+    );
 
     // ---- SWITCH DESKTOP ----
     // Do NOT manually call on_desktop_switch. Let the hook handle it (or not).
-    unsafe { switch_virtual_desktop(VK_RIGHT); }
+    unsafe {
+        switch_virtual_desktop(VK_RIGHT);
+    }
 
     // Wait for desktop switch animation + let hooks fire
     thread::sleep(Duration::from_secs(2));
@@ -3094,23 +3211,43 @@ fn acceptance_e2e_phantom_screenshot() {
     pump_messages(Duration::from_millis(500));
 
     // Screenshot AFTER: same region. If overlay is visible here = bug confirmed.
-    screenshot::capture_region(cap_x, cap_y, cap_w, cap_h, "evidence/phantom_test/02_phantom_check.png");
+    screenshot::capture_region(
+        cap_x,
+        cap_y,
+        cap_w,
+        cap_h,
+        "evidence/phantom_test/02_phantom_check.png",
+    );
     eprintln!("  Captured 02_phantom_check.png — inspect for phantom tabs!");
 
     // Check overlay visibility WHILE on the other desktop
     let ov_hwnd = state::with_state(|s| {
-        *s.overlays.overlays.get(&group_id).expect("Overlay not found")
+        *s.overlays
+            .overlays
+            .get(&group_id)
+            .expect("Overlay not found")
     });
     let overlay_visible_on_other_desktop = unsafe { IsWindowVisible(ov_hwnd) != 0 };
-    eprintln!("  overlay_visible_on_other_desktop = {}", overlay_visible_on_other_desktop);
+    eprintln!(
+        "  overlay_visible_on_other_desktop = {}",
+        overlay_visible_on_other_desktop
+    );
 
     // ---- SWITCH BACK (always, before asserting) ----
-    unsafe { switch_virtual_desktop(VK_LEFT); }
+    unsafe {
+        switch_virtual_desktop(VK_LEFT);
+    }
     thread::sleep(Duration::from_secs(2));
     pump_messages(Duration::from_millis(500));
 
     // Screenshot AFTER return
-    screenshot::capture_region(cap_x, cap_y, cap_w, cap_h, "evidence/phantom_test/03_after_return.png");
+    screenshot::capture_region(
+        cap_x,
+        cap_y,
+        cap_w,
+        cap_h,
+        "evidence/phantom_test/03_after_return.png",
+    );
     eprintln!("  Captured 03_after_return.png");
 
     // Cleanup
@@ -3380,10 +3517,17 @@ fn acceptance_tab_click_keeps_overlay_visible() {
 
     // Verify overlay is visible before click
     let ov_hwnd = state::with_state(|s| {
-        *s.overlays.overlays.get(&group_id).expect("Overlay must exist")
+        *s.overlays
+            .overlays
+            .get(&group_id)
+            .expect("Overlay must exist")
     });
     unsafe {
-        assert_ne!(IsWindowVisible(ov_hwnd), 0, "Overlay should be visible before click");
+        assert_ne!(
+            IsWindowVisible(ov_hwnd),
+            0,
+            "Overlay should be visible before click"
+        );
     }
 
     // --- Simulate tab click on tab 0 (win1) ---
@@ -3401,8 +3545,16 @@ fn acceptance_tab_click_keeps_overlay_visible() {
 
     // Verify win1 is now active and visible
     unsafe {
-        assert_ne!(IsWindowVisible(win1), 0, "win1 should be visible after switch");
-        assert_eq!(IsWindowVisible(win2), 0, "win2 should be hidden after switch");
+        assert_ne!(
+            IsWindowVisible(win1),
+            0,
+            "win1 should be visible after switch"
+        );
+        assert_eq!(
+            IsWindowVisible(win2),
+            0,
+            "win2 should be hidden after switch"
+        );
     }
 
     // Step 2: Simulate EVENT_SYSTEM_FOREGROUND hook → on_focus_changed(win1)
@@ -3442,16 +3594,16 @@ fn acceptance_tab_click_keeps_overlay_visible() {
             0,
             "BUG: Active window (win1) hidden after focus change"
         );
-        assert_eq!(
-            IsWindowVisible(win2),
-            0,
-            "win2 should remain hidden"
-        );
+        assert_eq!(IsWindowVisible(win2), 0, "win2 should remain hidden");
     }
 
     // Group state should be intact
     state::with_state(|s| {
-        let group = s.groups.groups.get(&group_id).expect("Group should still exist");
+        let group = s
+            .groups
+            .groups
+            .get(&group_id)
+            .expect("Group should still exist");
         assert_eq!(group.active, 0, "Active tab should be 0 (win1)");
         assert_eq!(group.tabs.len(), 2, "Group should still have 2 tabs");
         assert!(

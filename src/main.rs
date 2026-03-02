@@ -26,8 +26,16 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 static MSG_WINDOW_CLASS: &[u16] = &[
-    b'W' as u16, b'i' as u16, b'n' as u16, b'T' as u16, b'a' as u16, b'b' as u16,
-    b'M' as u16, b's' as u16, b'g' as u16, 0,
+    b'W' as u16,
+    b'i' as u16,
+    b'n' as u16,
+    b'T' as u16,
+    b'a' as u16,
+    b'b' as u16,
+    b'M' as u16,
+    b's' as u16,
+    b'g' as u16,
+    0,
 ];
 
 fn main() {

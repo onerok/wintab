@@ -4,11 +4,8 @@ use windows_sys::Win32::Foundation::*;
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::{
-    NMHDR, NMTTDISPINFOW, TTTOOLINFOW,
-    TOOLTIPS_CLASSW, TTDT_INITIAL,
-    TTF_IDISHWND, TTF_SUBCLASS,
-    TTM_ADDTOOLW, TTM_SETDELAYTIME, TTM_UPDATE,
-    TTN_GETDISPINFOW, TTS_ALWAYSTIP, TTS_NOPREFIX,
+    NMHDR, NMTTDISPINFOW, TOOLTIPS_CLASSW, TTDT_INITIAL, TTF_IDISHWND, TTF_SUBCLASS, TTM_ADDTOOLW,
+    TTM_SETDELAYTIME, TTM_UPDATE, TTN_GETDISPINFOW, TTS_ALWAYSTIP, TTS_NOPREFIX, TTTOOLINFOW,
     WM_MOUSELEAVE,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
@@ -35,9 +32,20 @@ const COLOR_HOVER: u32 = 0x00C08050;
 const COLOR_TEXT: u32 = 0x00FFFFFF;
 
 static OVERLAY_CLASS_UTF16: &[u16] = &[
-    b'W' as u16, b'i' as u16, b'n' as u16, b'T' as u16, b'a' as u16, b'b' as u16,
-    b'O' as u16, b'v' as u16, b'e' as u16, b'r' as u16, b'l' as u16, b'a' as u16,
-    b'y' as u16, 0,
+    b'W' as u16,
+    b'i' as u16,
+    b'n' as u16,
+    b'T' as u16,
+    b'a' as u16,
+    b'b' as u16,
+    b'O' as u16,
+    b'v' as u16,
+    b'e' as u16,
+    b'r' as u16,
+    b'l' as u16,
+    b'a' as u16,
+    b'y' as u16,
+    0,
 ];
 
 #[repr(C)]
@@ -84,7 +92,10 @@ fn create_tooltip(parent: HWND) -> HWND {
             TOOLTIPS_CLASSW,
             std::ptr::null(),
             WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP,
-            0, 0, 0, 0,
+            0,
+            0,
+            0,
+            0,
             parent,
             0 as _,
             GetModuleHandleW(std::ptr::null()),
@@ -120,8 +131,14 @@ pub fn create_overlay(group_id: GroupId) -> HWND {
             OVERLAY_CLASS_UTF16.as_ptr(),
             std::ptr::null(),
             WS_POPUP,
-            0, 0, 100, TAB_HEIGHT,
-            0 as _, 0 as _, instance, std::ptr::null(),
+            0,
+            0,
+            100,
+            TAB_HEIGHT,
+            0 as _,
+            0 as _,
+            instance,
+            std::ptr::null(),
         );
 
         if !hwnd.is_null() {
@@ -176,8 +193,14 @@ pub fn create_peek_overlay(target_hwnd: HWND) -> HWND {
             OVERLAY_CLASS_UTF16.as_ptr(),
             std::ptr::null(),
             WS_POPUP,
-            0, 0, 100, TAB_HEIGHT,
-            0 as _, 0 as _, instance, std::ptr::null(),
+            0,
+            0,
+            100,
+            TAB_HEIGHT,
+            0 as _,
+            0 as _,
+            instance,
+            std::ptr::null(),
         );
 
         if !hwnd.is_null() {
@@ -324,8 +347,14 @@ fn paint_peek_tab(overlay_hwnd: HWND, rect: &RECT, info: Option<&WindowInfo>) {
         if let Some(info) = info {
             let font_name: Vec<u16> = "Segoe UI\0".encode_utf16().collect();
             let font = CreateFontW(
-                14, 0, 0, 0,
-                FW_NORMAL as i32, 0, 0, 0,
+                14,
+                0,
+                0,
+                0,
+                FW_NORMAL as i32,
+                0,
+                0,
+                0,
                 DEFAULT_CHARSET as u32,
                 OUT_DEFAULT_PRECIS as u32,
                 CLIP_DEFAULT_PRECIS as u32,
@@ -351,7 +380,11 @@ fn paint_peek_tab(overlay_hwnd: HWND, rect: &RECT, info: Option<&WindowInfo>) {
                 );
             }
 
-            let text: Vec<u16> = info.title.encode_utf16().chain(std::iter::once(0)).collect();
+            let text: Vec<u16> = info
+                .title
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
             let mut text_rect = RECT {
                 left: TAB_PADDING + ICON_SIZE + 4,
                 top: 0,
@@ -373,7 +406,10 @@ fn paint_peek_tab(overlay_hwnd: HWND, rect: &RECT, info: Option<&WindowInfo>) {
         fix_gdi_alpha(bits as *mut u32, pixel_count);
 
         let pt_src = POINT { x: 0, y: 0 };
-        let size = SIZE { cx: width, cy: height };
+        let size = SIZE {
+            cx: width,
+            cy: height,
+        };
         let pt_dst = POINT {
             x: rect.left,
             y: rect.top - TAB_HEIGHT,
@@ -386,8 +422,15 @@ fn paint_peek_tab(overlay_hwnd: HWND, rect: &RECT, info: Option<&WindowInfo>) {
         };
 
         UpdateLayeredWindow(
-            overlay_hwnd, hdc_screen, &pt_dst, &size,
-            hdc_mem, &pt_src, 0, &blend, ULW_ALPHA,
+            overlay_hwnd,
+            hdc_screen,
+            &pt_dst,
+            &size,
+            hdc_mem,
+            &pt_src,
+            0,
+            &blend,
+            ULW_ALPHA,
         );
 
         SelectObject(hdc_mem, old_bmp);
@@ -511,8 +554,14 @@ fn paint_tabs(
 
         let font_name: Vec<u16> = "Segoe UI\0".encode_utf16().collect();
         let font = CreateFontW(
-            14, 0, 0, 0,
-            FW_NORMAL as i32, 0, 0, 0,
+            14,
+            0,
+            0,
+            0,
+            FW_NORMAL as i32,
+            0,
+            0,
+            0,
             DEFAULT_CHARSET as u32,
             OUT_DEFAULT_PRECIS as u32,
             CLIP_DEFAULT_PRECIS as u32,
@@ -565,7 +614,11 @@ fn paint_tabs(
                     );
                 }
 
-                let text: Vec<u16> = info.title.encode_utf16().chain(std::iter::once(0)).collect();
+                let text: Vec<u16> = info
+                    .title
+                    .encode_utf16()
+                    .chain(std::iter::once(0))
+                    .collect();
                 let mut text_rect = RECT {
                     left: x + TAB_PADDING + ICON_SIZE + 4,
                     top: 0,
@@ -585,7 +638,10 @@ fn paint_tabs(
         fix_gdi_alpha(bits as *mut u32, pixel_count);
 
         let pt_src = POINT { x: 0, y: 0 };
-        let size = SIZE { cx: width, cy: height };
+        let size = SIZE {
+            cx: width,
+            cy: height,
+        };
         let pt_dst = POINT {
             x: rect.left,
             y: rect.top - TAB_HEIGHT,
@@ -598,8 +654,15 @@ fn paint_tabs(
         };
 
         UpdateLayeredWindow(
-            overlay_hwnd, hdc_screen, &pt_dst, &size,
-            hdc_mem, &pt_src, 0, &blend, ULW_ALPHA,
+            overlay_hwnd,
+            hdc_screen,
+            &pt_dst,
+            &size,
+            hdc_mem,
+            &pt_src,
+            0,
+            &blend,
+            ULW_ALPHA,
         );
 
         SelectObject(hdc_mem, old_font);
@@ -768,14 +831,18 @@ unsafe fn handle_tooltip_getdispinfo(overlay_hwnd: HWND, lparam: isize) {
 
     let title = if !data.peek_hwnd.is_null() {
         state::try_with_state_ret(|s| {
-            s.windows.get(&data.peek_hwnd).map(|info| info.title.clone())
-        }).flatten()
+            s.windows
+                .get(&data.peek_hwnd)
+                .map(|info| info.title.clone())
+        })
+        .flatten()
     } else {
         state::try_with_state_ret(|s| {
             let group = s.groups.groups.get(&data.group_id)?;
             let hwnd = *group.tabs.get(hover as usize)?;
             s.windows.get(&hwnd).map(|info| info.title.clone())
-        }).flatten()
+        })
+        .flatten()
     };
 
     if let Some(title) = title {
@@ -783,7 +850,12 @@ unsafe fn handle_tooltip_getdispinfo(overlay_hwnd: HWND, lparam: isize) {
         if !hdc.is_null() {
             let text_utf16: Vec<u16> = title.encode_utf16().collect();
             let mut text_size: SIZE = std::mem::zeroed();
-            GetTextExtentPoint32W(hdc, text_utf16.as_ptr(), text_utf16.len() as i32, &mut text_size);
+            GetTextExtentPoint32W(
+                hdc,
+                text_utf16.as_ptr(),
+                text_utf16.len() as i32,
+                &mut text_size,
+            );
             ReleaseDC(overlay_hwnd, hdc);
 
             let mut client_rect: RECT = std::mem::zeroed();
@@ -794,8 +866,13 @@ unsafe fn handle_tooltip_getdispinfo(overlay_hwnd: HWND, lparam: isize) {
                 1
             } else {
                 state::try_with_state_ret(|s| {
-                    s.groups.groups.get(&data.group_id).map(|g| g.tabs.len() as i32)
-                }).flatten().unwrap_or(1)
+                    s.groups
+                        .groups
+                        .get(&data.group_id)
+                        .map(|g| g.tabs.len() as i32)
+                })
+                .flatten()
+                .unwrap_or(1)
             };
 
             let tab_width = if tab_count > 0 {
@@ -807,7 +884,11 @@ unsafe fn handle_tooltip_getdispinfo(overlay_hwnd: HWND, lparam: isize) {
             let text_area = tab_width - TAB_PADDING * 2 - ICON_SIZE - 4;
 
             if is_title_truncated(text_size.cx, text_area) {
-                let title_utf16: Vec<u16> = title.encode_utf16().take(79).chain(std::iter::once(0)).collect();
+                let title_utf16: Vec<u16> = title
+                    .encode_utf16()
+                    .take(79)
+                    .chain(std::iter::once(0))
+                    .collect();
                 std::ptr::copy_nonoverlapping(
                     title_utf16.as_ptr(),
                     nmdi.szText.as_mut_ptr(),
@@ -846,11 +927,17 @@ unsafe extern "system" fn overlay_wnd_proc(
 
                 // Preview logic: start delay if hovering an inactive tab
                 state::try_with_state(|s| {
-                    let is_inactive = s.groups.groups.get(&gid)
+                    let is_inactive = s
+                        .groups
+                        .groups
+                        .get(&gid)
                         .map(|g| tab_index != g.active)
                         .unwrap_or(false);
                     if is_inactive {
-                        let tab_hwnd = s.groups.groups.get(&gid)
+                        let tab_hwnd = s
+                            .groups
+                            .groups
+                            .get(&gid)
                             .and_then(|g| g.tabs.get(tab_index).copied());
                         if let Some(tab_hwnd) = tab_hwnd {
                             s.preview.start_delay(hwnd, tab_hwnd);
@@ -924,13 +1011,18 @@ pub fn create_drop_preview() -> HWND {
     unsafe {
         let instance = GetModuleHandleW(std::ptr::null());
         CreateWindowExW(
-            WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST
-                | WS_EX_TRANSPARENT,
+            WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_TRANSPARENT,
             OVERLAY_CLASS_UTF16.as_ptr(),
             std::ptr::null(),
             WS_POPUP,
-            0, 0, 100, TAB_HEIGHT,
-            0 as _, 0 as _, instance, std::ptr::null(),
+            0,
+            0,
+            100,
+            TAB_HEIGHT,
+            0 as _,
+            0 as _,
+            instance,
+            std::ptr::null(),
         )
     }
 }
@@ -997,18 +1089,71 @@ fn paint_drop_preview(preview_hwnd: HWND, rect: &RECT) {
         std::ptr::write_bytes(bits as *mut u32, 0, pixel_count);
 
         // Semi-transparent fill
-        fill_rect_alpha(bits as *mut u32, width, height, 0, 0, width, height, COLOR_ACTIVE, 60);
+        fill_rect_alpha(
+            bits as *mut u32,
+            width,
+            height,
+            0,
+            0,
+            width,
+            height,
+            COLOR_ACTIVE,
+            60,
+        );
 
         // 2px border
         let border = 2;
         let ba: u8 = 220;
-        fill_rect_alpha(bits as *mut u32, width, height, 0, 0, width, border, COLOR_HOVER, ba); // top
-        fill_rect_alpha(bits as *mut u32, width, height, 0, height - border, width, border, COLOR_HOVER, ba); // bottom
-        fill_rect_alpha(bits as *mut u32, width, height, 0, 0, border, height, COLOR_HOVER, ba); // left
-        fill_rect_alpha(bits as *mut u32, width, height, width - border, 0, border, height, COLOR_HOVER, ba); // right
+        fill_rect_alpha(
+            bits as *mut u32,
+            width,
+            height,
+            0,
+            0,
+            width,
+            border,
+            COLOR_HOVER,
+            ba,
+        ); // top
+        fill_rect_alpha(
+            bits as *mut u32,
+            width,
+            height,
+            0,
+            height - border,
+            width,
+            border,
+            COLOR_HOVER,
+            ba,
+        ); // bottom
+        fill_rect_alpha(
+            bits as *mut u32,
+            width,
+            height,
+            0,
+            0,
+            border,
+            height,
+            COLOR_HOVER,
+            ba,
+        ); // left
+        fill_rect_alpha(
+            bits as *mut u32,
+            width,
+            height,
+            width - border,
+            0,
+            border,
+            height,
+            COLOR_HOVER,
+            ba,
+        ); // right
 
         let pt_src = POINT { x: 0, y: 0 };
-        let size = SIZE { cx: width, cy: height };
+        let size = SIZE {
+            cx: width,
+            cy: height,
+        };
         let pt_dst = POINT {
             x: rect.left,
             y: rect.top - TAB_HEIGHT,
@@ -1021,8 +1166,15 @@ fn paint_drop_preview(preview_hwnd: HWND, rect: &RECT) {
         };
 
         UpdateLayeredWindow(
-            preview_hwnd, hdc_screen, &pt_dst, &size,
-            hdc_mem, &pt_src, 0, &blend, ULW_ALPHA,
+            preview_hwnd,
+            hdc_screen,
+            &pt_dst,
+            &size,
+            hdc_mem,
+            &pt_src,
+            0,
+            &blend,
+            ULW_ALPHA,
         );
 
         SelectObject(hdc_mem, old_bmp);
@@ -1054,7 +1206,10 @@ impl OverlayManager {
     }
 
     pub fn ensure_overlay(&mut self, group_id: GroupId) -> HWND {
-        *self.overlays.entry(group_id).or_insert_with(|| create_overlay(group_id))
+        *self
+            .overlays
+            .entry(group_id)
+            .or_insert_with(|| create_overlay(group_id))
     }
 
     pub fn remove_overlay(&mut self, group_id: GroupId) {
@@ -1081,11 +1236,7 @@ impl OverlayManager {
         }
     }
 
-    pub fn update_all(
-        &self,
-        groups: &GroupManager,
-        windows: &HashMap<HWND, WindowInfo>,
-    ) {
+    pub fn update_all(&self, groups: &GroupManager, windows: &HashMap<HWND, WindowInfo>) {
         for (&gid, &overlay) in &self.overlays {
             if !self.desktop_hidden.contains(&gid) {
                 update_overlay(overlay, gid, groups, windows);
@@ -1252,7 +1403,7 @@ mod tests {
     #[test]
     fn fill_rect_alpha_clamps_to_bounds() {
         let mut buf = vec![0u32; 4 * 4]; // 4x4
-        // Rect extends beyond buffer: x=2, w=5 → clamps to x1=4
+                                         // Rect extends beyond buffer: x=2, w=5 → clamps to x1=4
         fill_rect_alpha(buf.as_mut_ptr(), 4, 4, 2, 0, 5, 2, 0x000000FF, 255);
 
         assert_ne!(buf[0 * 4 + 2], 0); // (2,0) - inside
