@@ -459,7 +459,7 @@ impl AppState {
                 .position_store
                 .lookup(&info.process_name, &info.class_name, &info.title)
             {
-                Some(e) => e.clone(),
+                Some(e) => e,
                 None => return,
             };
 
@@ -468,14 +468,11 @@ impl AppState {
             return;
         }
 
-        // Move to saved virtual desktop if available
-        if let Some(ref hex) = entry.desktop_id {
-            if let Some(ref vd) = self.vdesktop {
-                if let Some(bytes) = position_store::hex_decode(hex) {
-                    vd.move_to_desktop(hwnd, &bytes);
-                }
-            }
-        }
+        // NOTE: We intentionally do NOT restore desktop_id here.
+        // Recording it is useful for future opt-in features, but
+        // unconditionally moving windows to a different virtual desktop
+        // on restore is too disruptive (e.g., user opens Notepad on
+        // Desktop 1 and WinTab silently moves it to Desktop 2).
 
         // Scale by DPI ratio
         let current_dpi = window::get_window_dpi(hwnd);

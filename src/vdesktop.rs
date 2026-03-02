@@ -66,6 +66,9 @@ pub fn guid_to_bytes(guid: &windows_sys::core::GUID) -> [u8; 16] {
 }
 
 /// Convert a 16-byte array back to a COM GUID (little-endian field layout).
+/// Currently unused in production (desktop restore is deferred), but tested
+/// and kept for future opt-in restore features.
+#[allow(dead_code)]
 pub fn bytes_to_guid(bytes: &[u8; 16]) -> windows_sys::core::GUID {
     windows_sys::core::GUID {
         data1: u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
@@ -142,6 +145,9 @@ impl VDesktopManager {
 
     /// Move a window to the virtual desktop identified by the given GUID bytes.
     /// Returns true on success.
+    /// Currently unused in production (desktop restore is deferred), but tested
+    /// and kept for future opt-in restore features.
+    #[allow(dead_code)]
     pub fn move_to_desktop(&self, hwnd: HWND, desktop_id: &[u8; 16]) -> bool {
         if self.ptr.is_null() {
             return false;

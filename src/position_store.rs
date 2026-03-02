@@ -205,6 +205,9 @@ pub fn hex_encode(bytes: &[u8; 16]) -> String {
 }
 
 /// Decode a 32-character hex string to 16 bytes. Returns None on bad input.
+/// Currently unused in production (desktop restore is deferred), but tested
+/// and kept for future opt-in restore features.
+#[allow(dead_code)]
 pub fn hex_decode(s: &str) -> Option<[u8; 16]> {
     if s.len() != 32 {
         return None;
@@ -218,6 +221,7 @@ pub fn hex_decode(s: &str) -> Option<[u8; 16]> {
     Some(bytes)
 }
 
+#[allow(dead_code)]
 fn hex_nibble(c: u8) -> Option<u8> {
     match c {
         b'0'..=b'9' => Some(c - b'0'),
