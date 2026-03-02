@@ -265,6 +265,10 @@ impl AppState {
         // Record position for persistence
         if let Some(info) = self.windows.get(&hwnd) {
             let dpi = window::get_window_dpi(hwnd);
+            let desktop_id = self
+                .vdesktop
+                .as_ref()
+                .and_then(|vd| vd.get_desktop_id(hwnd));
             self.position_store.record(
                 &info.process_name,
                 &info.class_name,
@@ -276,6 +280,7 @@ impl AppState {
                     bottom: info.rect.bottom,
                 },
                 dpi,
+                desktop_id.as_ref(),
             );
         }
 
@@ -467,6 +472,12 @@ impl AppState {
         if !position_store::monitor_exists_for_rect(&entry.rect) {
             return;
         }
+
+        // NOTE: We intentionally do NOT restore desktop_id here.
+        // Recording it is useful for future opt-in features, but
+        // unconditionally moving windows to a different virtual desktop
+        // on restore is too disruptive (e.g., user opens Notepad on
+        // Desktop 1 and WinTab silently moves it to Desktop 2).
 
         // Scale by DPI ratio
         let current_dpi = window::get_window_dpi(hwnd);

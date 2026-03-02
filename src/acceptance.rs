@@ -2009,6 +2009,7 @@ fn acceptance_position_restore_moves_window() {
             "Position Test",
             target_rect.clone(),
             96,
+            None,
         );
     });
 
