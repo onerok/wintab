@@ -5,8 +5,11 @@ use windows_sys::Win32::Foundation::{CloseHandle, HWND, LPARAM, MAX_PATH, RECT, 
 use windows_sys::Win32::Graphics::Dwm::{
     DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS,
 };
+use windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory;
+use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
 use windows_sys::Win32::System::Threading::{
-    GetCurrentProcessId, OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+    GetCurrentProcessId, OpenProcess, QueryFullProcessImageNameW,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ,
 };
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
@@ -20,6 +23,8 @@ pub struct WindowInfo {
     pub class_name: String,
     pub icon: HICON,
     pub rect: RECT,
+    /// Lazily populated when rules reference the command_line field.
+    pub command_line: Option<String>,
 }
 
 impl WindowInfo {
@@ -34,6 +39,7 @@ impl WindowInfo {
             class_name: get_class_name(hwnd),
             icon: get_window_icon(hwnd),
             rect: get_window_rect(hwnd),
+            command_line: None,
         })
     }
 
@@ -258,3 +264,137 @@ pub fn get_window_dpi(hwnd: HWND) -> u32 {
         }
     }
 }
+
+/// Get the command line of the process owning the window.
+///
+/// Uses `NtQueryInformationProcess` to read the remote process's PEB and
+/// extract the command line from `RTL_USER_PROCESS_PARAMETERS`. Returns an
+/// empty string on any failure (access denied, 32/64-bit mismatch, etc.).
+pub fn get_command_line(hwnd: HWND) -> String {
+    unsafe {
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, &mut pid);
+        if pid == 0 {
+            return String::new();
+        }
+
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, 0, pid);
+        if handle.is_null() {
+            return String::new();
+        }
+
+        let result = read_remote_command_line(handle);
+        CloseHandle(handle);
+        result
+    }
+}
+
+/// Read the command line from a remote process handle via PEB.
+///
+/// # Safety
+/// `handle` must be a valid process handle with PROCESS_QUERY_LIMITED_INFORMATION
+/// and PROCESS_VM_READ access.
+unsafe fn read_remote_command_line(handle: *mut std::ffi::c_void) -> String {
+    // Dynamically resolve NtQueryInformationProcess from ntdll.dll
+    let ntdll = GetModuleHandleA(c"ntdll.dll".as_ptr() as *const u8);
+    if ntdll.is_null() {
+        return String::new();
+    }
+    let proc_addr = GetProcAddress(ntdll, c"NtQueryInformationProcess".as_ptr() as *const u8);
+    let nt_query: NtQueryInformationProcessFn = match proc_addr {
+        Some(f) => std::mem::transmute::<
+            unsafe extern "system" fn() -> isize,
+            NtQueryInformationProcessFn,
+        >(f),
+        None => return String::new(),
+    };
+
+    // ProcessBasicInformation (class 0) gives us the PEB address
+    #[repr(C)]
+    struct ProcessBasicInformation {
+        _reserved1: usize,
+        peb_base_address: usize,
+        _reserved2: [usize; 4],
+    }
+
+    let mut pbi: ProcessBasicInformation = std::mem::zeroed();
+    let mut ret_len: u32 = 0;
+    let status = nt_query(
+        handle,
+        0, // ProcessBasicInformation
+        &mut pbi as *mut _ as *mut std::ffi::c_void,
+        std::mem::size_of::<ProcessBasicInformation>() as u32,
+        &mut ret_len,
+    );
+    if status < 0 || pbi.peb_base_address == 0 {
+        return String::new();
+    }
+
+    // Read ProcessParameters pointer from PEB.
+    // On 64-bit: offset 0x20 is RTL_USER_PROCESS_PARAMETERS*
+    // (PEB layout: 2 bytes + 1 byte + 1 byte + 4 bytes padding + 2 pointers = 0x20)
+    let params_ptr_offset = 0x20usize;
+    let mut process_params_addr: usize = 0;
+    let ok = ReadProcessMemory(
+        handle,
+        (pbi.peb_base_address + params_ptr_offset) as *const std::ffi::c_void,
+        &mut process_params_addr as *mut _ as *mut std::ffi::c_void,
+        std::mem::size_of::<usize>(),
+        std::ptr::null_mut(),
+    );
+    if ok == 0 || process_params_addr == 0 {
+        return String::new();
+    }
+
+    // Read CommandLine UNICODE_STRING from RTL_USER_PROCESS_PARAMETERS.
+    // CommandLine is at offset 0x70 on 64-bit.
+    // UNICODE_STRING: { u16 Length, u16 MaximumLength, padding, usize Buffer }
+    let cmd_line_offset = 0x70usize;
+
+    #[repr(C)]
+    struct UnicodeString {
+        length: u16, // in bytes
+        max_length: u16,
+        _padding: u32,
+        buffer: usize,
+    }
+
+    let mut us: UnicodeString = std::mem::zeroed();
+    let ok = ReadProcessMemory(
+        handle,
+        (process_params_addr + cmd_line_offset) as *const std::ffi::c_void,
+        &mut us as *mut _ as *mut std::ffi::c_void,
+        std::mem::size_of::<UnicodeString>(),
+        std::ptr::null_mut(),
+    );
+    if ok == 0 || us.length == 0 || us.buffer == 0 {
+        return String::new();
+    }
+
+    // Read the actual command line string
+    let char_count = us.length as usize / 2;
+    if char_count > 32768 {
+        return String::new(); // sanity limit
+    }
+    let mut buf = vec![0u16; char_count];
+    let ok = ReadProcessMemory(
+        handle,
+        us.buffer as *const std::ffi::c_void,
+        buf.as_mut_ptr() as *mut std::ffi::c_void,
+        us.length as usize,
+        std::ptr::null_mut(),
+    );
+    if ok == 0 {
+        return String::new();
+    }
+
+    OsString::from_wide(&buf).to_string_lossy().into_owned()
+}
+
+type NtQueryInformationProcessFn = unsafe extern "system" fn(
+    process_handle: *mut std::ffi::c_void,
+    process_information_class: u32,
+    process_information: *mut std::ffi::c_void,
+    process_information_length: u32,
+    return_length: *mut u32,
+) -> i32;

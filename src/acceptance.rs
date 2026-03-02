@@ -90,6 +90,7 @@ fn make_window_info(hwnd: HWND) -> WindowInfo {
         class_name: String::new(),
         icon: window::get_window_icon(hwnd),
         rect: window::get_window_rect(hwnd),
+        command_line: None,
     }
 }
 
@@ -1675,6 +1676,7 @@ fn make_window_info_with_meta(hwnd: HWND, process_name: &str, class_name: &str) 
         class_name: class_name.to_string(),
         icon: window::get_window_icon(hwnd),
         rect: window::get_window_rect(hwnd),
+        command_line: None,
     }
 }
 
@@ -2021,6 +2023,7 @@ fn acceptance_position_restore_moves_window() {
         class_name: "PosClass".to_string(),
         icon: window::get_window_icon(win1),
         rect: window::get_window_rect(win1),
+        command_line: None,
     };
 
     state::with_state(|s| {

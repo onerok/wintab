@@ -454,14 +454,27 @@ impl AppState {
         if self.groups.group_of(hwnd).is_some() {
             return;
         }
+
+        // Lazily populate command_line only when rules reference it
+        if self.rules.uses_command_line() {
+            if let Some(info) = self.windows.get_mut(&hwnd) {
+                if info.command_line.is_none() {
+                    info.command_line = Some(window::get_command_line(hwnd));
+                }
+            }
+        }
+
         let info = match self.windows.get(&hwnd) {
             Some(i) => i,
             None => return,
         };
+        let empty = String::new();
+        let cmd_line = info.command_line.as_ref().unwrap_or(&empty);
         let rule_info = WindowRuleInfo {
             process_name: &info.process_name,
             class_name: &info.class_name,
             title: &info.title,
+            command_line: cmd_line,
         };
         let group_name = match self.rules.apply(&rule_info) {
             Some(name) => name.to_string(),
