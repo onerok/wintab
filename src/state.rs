@@ -40,7 +40,7 @@ thread_local! {
         peek: None,
         suppress_events: false,
         vdesktop: None,
-        rules: RulesEngine { groups: Vec::new() },
+        rules: RulesEngine { groups: Vec::new(), preview_config: crate::config::PreviewConfig::default() },
         position_store: PositionStore::empty(),
         preview: PreviewManager::new(),
     });
@@ -85,6 +85,8 @@ impl AppState {
             self.rules = RulesEngine::load(&dir.join("config.yaml"));
             self.position_store = PositionStore::load(&dir.join("positions.yaml"));
         }
+
+        self.preview.configure(&self.rules.preview_config);
 
         let windows = window::enumerate_windows();
         for info in windows {
@@ -143,6 +145,8 @@ impl AppState {
     /// as needed.  Called from on_focus_changed() as a reliable fallback
     /// since EVENT_SYSTEM_DESKTOPSWITCH may not arrive via the hook.
     fn sync_desktop_visibility(&mut self, focused_hwnd: HWND) {
+        self.preview.hide();
+
         let vd = match &self.vdesktop {
             Some(vd) => vd,
             None => return,
@@ -243,6 +247,7 @@ impl AppState {
             if !self.overlays.desktop_hidden.contains(&gid) {
                 if let Some(&ov) = self.overlays.overlays.get(&gid) {
                     overlay::update_overlay(ov, gid, &self.groups, &self.windows);
+                    overlay::refresh_tooltip(ov);
                 }
             }
         }
