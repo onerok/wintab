@@ -58,6 +58,14 @@ pub struct PreviewManager {
     pending_overlay: HWND,
     /// Tab HWND the timer is waiting to preview.
     pending_tab_hwnd: HWND,
+    /// Configurable preview width (default: PREVIEW_WIDTH).
+    width: i32,
+    /// Configurable max preview height (default: PREVIEW_MAX_HEIGHT).
+    max_height: i32,
+    /// Configurable preview opacity (default: PREVIEW_OPACITY).
+    opacity: u8,
+    /// Configurable hover delay in ms (default: PREVIEW_DELAY_MS).
+    delay_ms: u32,
 }
 
 impl PreviewManager {
@@ -68,7 +76,19 @@ impl PreviewManager {
             active_tab_hwnd: std::ptr::null_mut(),
             pending_overlay: std::ptr::null_mut(),
             pending_tab_hwnd: std::ptr::null_mut(),
+            width: PREVIEW_WIDTH,
+            max_height: PREVIEW_MAX_HEIGHT,
+            opacity: PREVIEW_OPACITY,
+            delay_ms: PREVIEW_DELAY_MS,
         }
+    }
+
+    /// Apply preview configuration from config file.
+    pub fn configure(&mut self, config: &crate::config::PreviewConfig) {
+        self.width = config.width;
+        self.max_height = config.max_height;
+        self.opacity = config.opacity;
+        self.delay_ms = config.delay_ms;
     }
 
     fn ensure_preview_window(&mut self) -> HWND {
@@ -100,7 +120,7 @@ impl PreviewManager {
         self.pending_overlay = overlay_hwnd;
         self.pending_tab_hwnd = tab_hwnd;
         unsafe {
-            SetTimer(overlay_hwnd, PREVIEW_TIMER_ID, PREVIEW_DELAY_MS, None);
+            SetTimer(overlay_hwnd, PREVIEW_TIMER_ID, self.delay_ms, None);
         }
     }
 
@@ -197,7 +217,8 @@ impl PreviewManager {
             return;
         }
 
-        let (preview_w, preview_h) = compute_preview_size(src_size.cx, src_size.cy);
+        let (preview_w, preview_h) =
+            compute_preview_size(src_size.cx, src_size.cy, self.width, self.max_height);
 
         // Position: centered on tab, below tab bar
         let preview_left = tab_center_x - preview_w / 2;
@@ -241,7 +262,7 @@ impl PreviewManager {
                 right: 0,
                 bottom: 0,
             },
-            opacity: PREVIEW_OPACITY,
+            opacity: self.opacity,
             fVisible: TRUE,
             fSourceClientAreaOnly: FALSE,
         };
@@ -321,14 +342,14 @@ fn create_preview_window() -> HWND {
 }
 
 /// Compute preview dimensions preserving aspect ratio.
-/// Returns (width, height) clamped to PREVIEW_WIDTH and PREVIEW_MAX_HEIGHT.
-fn compute_preview_size(src_w: i32, src_h: i32) -> (i32, i32) {
+/// Returns (width, height) clamped to the given max dimensions.
+fn compute_preview_size(src_w: i32, src_h: i32, max_w: i32, max_h: i32) -> (i32, i32) {
     if src_w <= 0 || src_h <= 0 {
-        return (PREVIEW_WIDTH, PREVIEW_WIDTH);
+        return (max_w, max_w);
     }
-    let w = PREVIEW_WIDTH;
+    let w = max_w;
     let h = (src_h as f64 / src_w as f64 * w as f64).round() as i32;
-    let h = h.clamp(1, PREVIEW_MAX_HEIGHT);
+    let h = h.clamp(1, max_h);
     (w, h)
 }
 
@@ -421,7 +442,7 @@ mod tests {
     #[test]
     fn aspect_ratio_landscape() {
         // 1920x1080 → 300 wide, height = 1080/1920 * 300 = 168.75 → 169
-        let (w, h) = compute_preview_size(1920, 1080);
+        let (w, h) = compute_preview_size(1920, 1080, PREVIEW_WIDTH, PREVIEW_MAX_HEIGHT);
         assert_eq!(w, 300);
         assert_eq!(h, 169);
     }
@@ -429,21 +450,21 @@ mod tests {
     #[test]
     fn aspect_ratio_portrait() {
         // 1080x1920 → 300 wide, height = 1920/1080 * 300 = 533 → capped at 400
-        let (w, h) = compute_preview_size(1080, 1920);
+        let (w, h) = compute_preview_size(1080, 1920, PREVIEW_WIDTH, PREVIEW_MAX_HEIGHT);
         assert_eq!(w, 300);
         assert_eq!(h, 400);
     }
 
     #[test]
     fn aspect_ratio_square() {
-        let (w, h) = compute_preview_size(500, 500);
+        let (w, h) = compute_preview_size(500, 500, PREVIEW_WIDTH, PREVIEW_MAX_HEIGHT);
         assert_eq!(w, 300);
         assert_eq!(h, 300);
     }
 
     #[test]
     fn aspect_ratio_zero_source() {
-        let (w, h) = compute_preview_size(0, 0);
+        let (w, h) = compute_preview_size(0, 0, PREVIEW_WIDTH, PREVIEW_MAX_HEIGHT);
         assert_eq!(w, 300);
         assert_eq!(h, 300);
     }
@@ -451,7 +472,7 @@ mod tests {
     #[test]
     fn aspect_ratio_4k() {
         // 3840x2160 → 300 wide, height = 2160/3840 * 300 = 168.75 → 169
-        let (w, h) = compute_preview_size(3840, 2160);
+        let (w, h) = compute_preview_size(3840, 2160, PREVIEW_WIDTH, PREVIEW_MAX_HEIGHT);
         assert_eq!(w, 300);
         assert_eq!(h, 169);
     }
@@ -515,5 +536,40 @@ mod tests {
         };
         let (_x, y) = clamp_to_rect(100, 30, 300, 169, work);
         assert_eq!(y, 50);
+    }
+
+    #[test]
+    fn aspect_ratio_custom_dimensions() {
+        // Custom width=200, max_height=150
+        let (w, h) = compute_preview_size(1920, 1080, 200, 150);
+        assert_eq!(w, 200);
+        // 1080/1920 * 200 = 112.5 → 113
+        assert_eq!(h, 113);
+
+        // Portrait with small max_height should clamp
+        let (w, h) = compute_preview_size(1080, 1920, 200, 150);
+        assert_eq!(w, 200);
+        assert_eq!(h, 150); // clamped from 356
+    }
+
+    #[test]
+    fn configure_sets_fields() {
+        let mut pm = PreviewManager::new();
+        assert_eq!(pm.width, PREVIEW_WIDTH);
+        assert_eq!(pm.max_height, PREVIEW_MAX_HEIGHT);
+        assert_eq!(pm.opacity, PREVIEW_OPACITY);
+        assert_eq!(pm.delay_ms, PREVIEW_DELAY_MS);
+
+        let config = crate::config::PreviewConfig {
+            width: 400,
+            max_height: 500,
+            opacity: 180,
+            delay_ms: 250,
+        };
+        pm.configure(&config);
+        assert_eq!(pm.width, 400);
+        assert_eq!(pm.max_height, 500);
+        assert_eq!(pm.opacity, 180);
+        assert_eq!(pm.delay_ms, 250);
     }
 }

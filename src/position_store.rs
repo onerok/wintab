@@ -19,6 +19,8 @@ pub struct PositionEntry {
     pub dpi: u32,
     pub last_seen: u64,
     pub hit_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desktop_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -112,8 +114,10 @@ impl PositionStore {
         title: &str,
         rect: RectDef,
         dpi: u32,
+        desktop_id: Option<&[u8; 16]>,
     ) {
         let now = current_timestamp();
+        let desktop_hex = desktop_id.map(hex_encode);
 
         // Try to find an existing exact match to update
         if let Some(e) = self.entries.iter_mut().find(|e| {
@@ -123,6 +127,7 @@ impl PositionStore {
             e.dpi = dpi;
             e.last_seen = now;
             e.hit_count += 1;
+            e.desktop_id = desktop_hex;
             self.dirty_count += 1;
             if self.dirty_count >= FLUSH_THRESHOLD {
                 self.flush();
@@ -139,6 +144,7 @@ impl PositionStore {
             dpi,
             last_seen: now,
             hit_count: 1,
+            desktop_id: desktop_hex,
         });
         self.dirty_count += 1;
         if self.dirty_count >= FLUSH_THRESHOLD {
@@ -274,6 +280,38 @@ pub fn fuzzy_title_match(stored: &str, candidate: &str) -> bool {
     dist <= threshold
 }
 
+/// Encode 16 bytes as a 32-character lowercase hex string.
+pub fn hex_encode(bytes: &[u8; 16]) -> String {
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+/// Decode a 32-character hex string to 16 bytes. Returns None on bad input.
+/// Currently unused in production (desktop restore is deferred), but tested
+/// and kept for future opt-in restore features.
+#[allow(dead_code)]
+pub fn hex_decode(s: &str) -> Option<[u8; 16]> {
+    if s.len() != 32 {
+        return None;
+    }
+    let mut bytes = [0u8; 16];
+    for (i, chunk) in s.as_bytes().chunks(2).enumerate() {
+        let hi = hex_nibble(chunk[0])?;
+        let lo = hex_nibble(chunk[1])?;
+        bytes[i] = (hi << 4) | lo;
+    }
+    Some(bytes)
+}
+
+#[allow(dead_code)]
+fn hex_nibble(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    }
+}
+
 /// Check if any monitor contains the given rect (via MonitorFromRect).
 #[cfg(not(test))]
 pub fn monitor_exists_for_rect(rect: &RectDef) -> bool {
@@ -358,6 +396,7 @@ mod tests {
             "main.rs",
             rect(0, 0, 800, 600),
             96,
+            None,
         );
         let result = store.lookup("code.exe", "Chrome_WidgetWin_1", "main.rs");
         assert!(result.is_some());
@@ -373,6 +412,7 @@ mod tests {
             "main.rs - Visual Studio",
             rect(10, 20, 800, 600),
             96,
+            None,
         );
         // Exact title doesn't match, fuzzy should (only 1 char diff in 23-char string)
         let result = store.lookup("code.exe", "CW1", "main.rs - Visual Studi0");
@@ -382,15 +422,15 @@ mod tests {
     #[test]
     fn lookup_no_match() {
         let mut store = PositionStore::empty();
-        store.record("code.exe", "CW1", "main.rs", rect(0, 0, 800, 600), 96);
+        store.record("code.exe", "CW1", "main.rs", rect(0, 0, 800, 600), 96, None);
         assert!(store.lookup("notepad.exe", "Notepad", "Untitled").is_none());
     }
 
     #[test]
     fn record_upserts() {
         let mut store = PositionStore::empty();
-        store.record("a.exe", "C", "T", rect(0, 0, 100, 100), 96);
-        store.record("a.exe", "C", "T", rect(10, 10, 200, 200), 96);
+        store.record("a.exe", "C", "T", rect(0, 0, 100, 100), 96, None);
+        store.record("a.exe", "C", "T", rect(10, 10, 200, 200), 96, None);
         assert_eq!(store.entries.len(), 1);
         assert_eq!(store.entries[0].rect.right, 200);
         assert_eq!(store.entries[0].hit_count, 2);
@@ -412,6 +452,7 @@ mod tests {
             dpi: 96,
             last_seen: 0, // epoch — very old
             hit_count: 1,
+            desktop_id: None,
         });
         store.entries.push(PositionEntry {
             process_name: "new.exe".into(),
@@ -426,6 +467,7 @@ mod tests {
             dpi: 96,
             last_seen: current_timestamp(),
             hit_count: 1,
+            desktop_id: None,
         });
         store.flush();
         assert_eq!(store.entries.len(), 1);
@@ -450,10 +492,144 @@ mod tests {
                 dpi: 96,
                 last_seen: now - i as u64,
                 hit_count: 1,
+                desktop_id: None,
             });
         }
         store.flush();
         assert_eq!(store.entries.len(), MAX_ENTRIES);
+    }
+
+    #[test]
+    fn record_stores_desktop_id() {
+        let mut store = PositionStore::empty();
+        let id: [u8; 16] = [
+            0xAA, 0x50, 0x90, 0x86, 0x5C, 0xA9, 0x4C, 0x25, 0x8F, 0x95, 0x58, 0x9D, 0x3C, 0x07,
+            0xB4, 0x8A,
+        ];
+        store.record("a.exe", "C", "T", rect(0, 0, 100, 100), 96, Some(&id));
+        let entry = store.lookup("a.exe", "C", "T").unwrap();
+        assert_eq!(
+            entry.desktop_id.as_deref(),
+            Some("aa5090865ca94c258f95589d3c07b48a")
+        );
+    }
+
+    #[test]
+    fn record_without_desktop_id() {
+        let mut store = PositionStore::empty();
+        store.record("a.exe", "C", "T", rect(0, 0, 100, 100), 96, None);
+        let entry = store.lookup("a.exe", "C", "T").unwrap();
+        assert!(entry.desktop_id.is_none());
+    }
+
+    #[test]
+    fn serialize_entry_without_desktop_id() {
+        let entry = PositionEntry {
+            process_name: "a.exe".into(),
+            class_name: "C".into(),
+            title: "T".into(),
+            rect: RectDef {
+                left: 0,
+                top: 0,
+                right: 100,
+                bottom: 100,
+            },
+            dpi: 96,
+            last_seen: 1000,
+            hit_count: 1,
+            desktop_id: None,
+        };
+        let yaml = serde_yaml::to_string(&entry).unwrap();
+        // desktop_id should be omitted from output
+        assert!(!yaml.contains("desktop_id"));
+    }
+
+    #[test]
+    fn serialize_entry_with_desktop_id() {
+        let entry = PositionEntry {
+            process_name: "a.exe".into(),
+            class_name: "C".into(),
+            title: "T".into(),
+            rect: RectDef {
+                left: 0,
+                top: 0,
+                right: 100,
+                bottom: 100,
+            },
+            dpi: 96,
+            last_seen: 1000,
+            hit_count: 1,
+            desktop_id: Some("aa5090865ca94c258f95589d3c07b48a".into()),
+        };
+        let yaml = serde_yaml::to_string(&entry).unwrap();
+        assert!(yaml.contains("desktop_id"));
+        assert!(yaml.contains("aa5090865ca94c258f95589d3c07b48a"));
+    }
+
+    #[test]
+    fn deserialize_entry_without_desktop_id_backward_compat() {
+        let yaml = r#"
+process_name: a.exe
+class_name: C
+title: T
+rect:
+  left: 0
+  top: 0
+  right: 100
+  bottom: 100
+dpi: 96
+last_seen: 1000
+hit_count: 1
+"#;
+        let entry: PositionEntry = serde_yaml::from_str(yaml).unwrap();
+        assert!(entry.desktop_id.is_none());
+        assert_eq!(entry.process_name, "a.exe");
+    }
+
+    #[test]
+    fn deserialize_entry_with_desktop_id() {
+        let yaml = r#"
+process_name: a.exe
+class_name: C
+title: T
+rect:
+  left: 0
+  top: 0
+  right: 100
+  bottom: 100
+dpi: 96
+last_seen: 1000
+hit_count: 1
+desktop_id: aa5090865ca94c258f95589d3c07b48a
+"#;
+        let entry: PositionEntry = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(
+            entry.desktop_id.as_deref(),
+            Some("aa5090865ca94c258f95589d3c07b48a")
+        );
+    }
+
+    #[test]
+    fn hex_encode_decode_roundtrip() {
+        let bytes: [u8; 16] = [
+            0xAA, 0x50, 0x90, 0x86, 0x5C, 0xA9, 0x4C, 0x25, 0x8F, 0x95, 0x58, 0x9D, 0x3C, 0x07,
+            0xB4, 0x8A,
+        ];
+        let hex = hex_encode(&bytes);
+        assert_eq!(hex, "aa5090865ca94c258f95589d3c07b48a");
+        let decoded = hex_decode(&hex).unwrap();
+        assert_eq!(decoded, bytes);
+    }
+
+    #[test]
+    fn hex_decode_bad_length() {
+        assert!(hex_decode("aabb").is_none());
+        assert!(hex_decode("").is_none());
+    }
+
+    #[test]
+    fn hex_decode_bad_chars() {
+        assert!(hex_decode("zz5090865ca94c258f95589d3c07b48a").is_none());
     }
 
     fn rect(l: i32, t: i32, r: i32, b: i32) -> RectDef {

@@ -54,7 +54,7 @@ thread_local! {
         peek: None,
         suppress_events: false,
         vdesktop: None,
-        rules: RulesEngine { groups: Vec::new() },
+        rules: RulesEngine { groups: Vec::new(), preview_config: crate::config::PreviewConfig::default() },
         position_store: PositionStore::empty(),
         preview: PreviewManager::new(),
         pending_restores: HashMap::new(),
@@ -101,6 +101,8 @@ impl AppState {
             self.rules = RulesEngine::load(&dir.join("config.yaml"));
             self.position_store = PositionStore::load(&dir.join("positions.yaml"));
         }
+
+        self.preview.configure(&self.rules.preview_config);
 
         let windows = window::enumerate_windows();
         for info in windows {
@@ -159,6 +161,8 @@ impl AppState {
     /// as needed.  Called from on_focus_changed() as a reliable fallback
     /// since EVENT_SYSTEM_DESKTOPSWITCH may not arrive via the hook.
     fn sync_desktop_visibility(&mut self, focused_hwnd: HWND) {
+        self.preview.hide();
+
         let vd = match &self.vdesktop {
             Some(vd) => vd,
             None => return,
@@ -260,6 +264,7 @@ impl AppState {
             if !self.overlays.desktop_hidden.contains(&gid) {
                 if let Some(&ov) = self.overlays.overlays.get(&gid) {
                     overlay::update_overlay(ov, gid, &self.groups, &self.windows);
+                    overlay::refresh_tooltip(ov);
                 }
             }
         }
@@ -277,6 +282,10 @@ impl AppState {
         // Record position for persistence
         if let Some(info) = self.windows.get(&hwnd) {
             let dpi = window::get_window_dpi(hwnd);
+            let desktop_id = self
+                .vdesktop
+                .as_ref()
+                .and_then(|vd| vd.get_desktop_id(hwnd));
             self.position_store.record(
                 &info.process_name,
                 &info.class_name,
@@ -288,6 +297,7 @@ impl AppState {
                     bottom: info.rect.bottom,
                 },
                 dpi,
+                desktop_id.as_ref(),
             );
         }
 
@@ -500,6 +510,12 @@ impl AppState {
         if !position_store::monitor_exists_for_rect(&entry.rect) {
             return;
         }
+
+        // NOTE: We intentionally do NOT restore desktop_id here.
+        // Recording it is useful for future opt-in features, but
+        // unconditionally moving windows to a different virtual desktop
+        // on restore is too disruptive (e.g., user opens Notepad on
+        // Desktop 1 and WinTab silently moves it to Desktop 2).
 
         // Scale by DPI ratio
         let current_dpi = window::get_window_dpi(hwnd);
