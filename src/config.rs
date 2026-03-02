@@ -597,6 +597,58 @@ mod tests {
     }
 
     #[test]
+    fn reload_picks_up_new_rules() {
+        let dir = std::env::temp_dir().join("wintab_test_reload");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("reload.yaml");
+
+        // Initial config: one rule group
+        std::fs::write(
+            &path,
+            r#"rules:
+  - name: "Editors"
+    patterns:
+      - field: process_name
+        op: equals
+        value: "code.exe"
+"#,
+        )
+        .unwrap();
+        let engine = RulesEngine::load(&path);
+        assert_eq!(engine.groups.len(), 1);
+        assert_eq!(engine.groups[0].name, "Editors");
+
+        // Modify config: two rule groups
+        std::fs::write(
+            &path,
+            r#"rules:
+  - name: "Editors"
+    patterns:
+      - field: process_name
+        op: equals
+        value: "code.exe"
+  - name: "Terminals"
+    patterns:
+      - field: process_name
+        op: equals
+        value: "WindowsTerminal.exe"
+"#,
+        )
+        .unwrap();
+
+        // Reload
+        let engine = RulesEngine::load(&path);
+        assert_eq!(engine.groups.len(), 2);
+        assert_eq!(engine.groups[0].name, "Editors");
+        assert_eq!(engine.groups[1].name, "Terminals");
+
+        let i = info("WindowsTerminal.exe", "", "");
+        assert_eq!(engine.apply(&i), Some("Terminals"));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn load_bad_field_skips_pattern() {
         let dir = std::env::temp_dir().join("wintab_test_config");
         let _ = std::fs::create_dir_all(&dir);

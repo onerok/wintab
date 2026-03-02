@@ -434,6 +434,22 @@ impl AppState {
         }
     }
 
+    /// Reload config.yaml and update the rules engine.
+    pub fn reload_config(&mut self) {
+        let dir = match crate::appdata::config_dir() {
+            Some(d) => d,
+            None => {
+                eprintln!("[config] reload failed: could not determine config directory");
+                return;
+            }
+        };
+        let path = dir.join("config.yaml");
+        let new_rules = RulesEngine::load(&path);
+        let count = new_rules.groups.len();
+        self.rules = new_rules;
+        eprintln!("[config] reloaded config.yaml ({} rule groups)", count);
+    }
+
     pub fn shutdown(&mut self) {
         self.position_store.flush();
         self.preview.destroy();
