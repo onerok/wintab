@@ -1709,6 +1709,7 @@ fn acceptance_rules_auto_group_two_matching_windows() {
                     matcher: Matcher::Equals("test_app.exe".into(), false),
                 }],
             }],
+            preview_config: PreviewConfig::default(),
         };
 
         // Insert windows — win1 and win2 match, win_solo doesn't
@@ -1774,7 +1775,10 @@ fn acceptance_rules_auto_group_two_matching_windows() {
         s.groups.remove_from_group(win1);
         s.groups.remove_from_group(win2);
         s.windows.clear();
-        s.rules = RulesEngine { groups: Vec::new() };
+        s.rules = RulesEngine {
+            groups: Vec::new(),
+            preview_config: PreviewConfig::default(),
+        };
     });
 
     unsafe {
@@ -1811,6 +1815,7 @@ fn acceptance_rules_third_window_joins_existing_group() {
                     matcher: Matcher::Equals("editor.exe".into(), false),
                 }],
             }],
+            preview_config: PreviewConfig::default(),
         };
 
         s.windows.insert(
@@ -1851,7 +1856,10 @@ fn acceptance_rules_third_window_joins_existing_group() {
         s.groups.remove_from_group(win2);
         s.groups.remove_from_group(win3);
         s.windows.clear();
-        s.rules = RulesEngine { groups: Vec::new() };
+        s.rules = RulesEngine {
+            groups: Vec::new(),
+            preview_config: PreviewConfig::default(),
+        };
     });
 
     unsafe {
@@ -1886,6 +1894,7 @@ fn acceptance_rules_disabled_rule_skipped() {
                     matcher: Matcher::Equals("app.exe".into(), false),
                 }],
             }],
+            preview_config: PreviewConfig::default(),
         };
 
         s.windows
@@ -1911,7 +1920,10 @@ fn acceptance_rules_disabled_rule_skipped() {
 
         // Cleanup
         s.windows.clear();
-        s.rules = RulesEngine { groups: Vec::new() };
+        s.rules = RulesEngine {
+            groups: Vec::new(),
+            preview_config: PreviewConfig::default(),
+        };
     });
 
     unsafe {
@@ -1943,6 +1955,7 @@ fn acceptance_pending_singleton_cleaned_on_destroy() {
                     matcher: Matcher::Equals("pending.exe".into(), false),
                 }],
             }],
+            preview_config: PreviewConfig::default(),
         };
 
         s.windows
@@ -1959,7 +1972,10 @@ fn acceptance_pending_singleton_cleaned_on_destroy() {
         );
 
         // Cleanup
-        s.rules = RulesEngine { groups: Vec::new() };
+        s.rules = RulesEngine {
+            groups: Vec::new(),
+            preview_config: PreviewConfig::default(),
+        };
     });
 
     unsafe {
@@ -1995,6 +2011,7 @@ fn acceptance_position_restore_moves_window() {
             "Position Test",
             target_rect.clone(),
             96,
+            None,
         );
     });
 
@@ -2195,6 +2212,7 @@ fn acceptance_rules_e2e_auto_group() {
                     matcher: Matcher::Equals("dummy_window.exe".into(), false),
                 }],
             }],
+            preview_config: PreviewConfig::default(),
         };
 
         for info in &discovered {
@@ -2274,7 +2292,10 @@ fn acceptance_rules_e2e_auto_group() {
         s.groups.remove_from_group(discovered[0].hwnd);
         s.groups.remove_from_group(discovered[1].hwnd);
         s.windows.clear();
-        s.rules = crate::config::RulesEngine { groups: Vec::new() };
+        s.rules = crate::config::RulesEngine {
+            groups: Vec::new(),
+            preview_config: crate::config::PreviewConfig::default(),
+        };
         s.groups.pending_rules.clear();
         s.groups.named_groups.clear();
         s.shutdown();

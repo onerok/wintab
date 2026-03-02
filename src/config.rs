@@ -1,7 +1,45 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+// ── Preview config ──
+
+fn default_preview_width() -> i32 {
+    300
+}
+fn default_preview_max_height() -> i32 {
+    400
+}
+fn default_preview_opacity() -> u8 {
+    200
+}
+fn default_preview_delay_ms() -> u32 {
+    500
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreviewConfig {
+    #[serde(default = "default_preview_width")]
+    pub width: i32,
+    #[serde(default = "default_preview_max_height")]
+    pub max_height: i32,
+    #[serde(default = "default_preview_opacity")]
+    pub opacity: u8,
+    #[serde(default = "default_preview_delay_ms")]
+    pub delay_ms: u32,
+}
+
+impl Default for PreviewConfig {
+    fn default() -> Self {
+        PreviewConfig {
+            width: default_preview_width(),
+            max_height: default_preview_max_height(),
+            opacity: default_preview_opacity(),
+            delay_ms: default_preview_delay_ms(),
+        }
+    }
+}
 
 // ── Serde schema ──
 
@@ -9,6 +47,8 @@ use serde::Deserialize;
 struct ConfigFile {
     #[serde(default)]
     rules: Vec<RuleGroupDef>,
+    #[serde(default)]
+    preview: Option<PreviewConfig>,
 }
 
 #[derive(Deserialize)]
@@ -88,6 +128,7 @@ pub struct RuleGroup {
 /// Holds all parsed rules. Created once at startup.
 pub struct RulesEngine {
     pub groups: Vec<RuleGroup>,
+    pub preview_config: PreviewConfig,
 }
 
 /// Info needed to evaluate rules against a window.
@@ -218,11 +259,18 @@ impl RulesEngine {
             })
             .collect();
 
-        RulesEngine { groups }
+        let preview_config = config.preview.unwrap_or_default();
+        RulesEngine {
+            groups,
+            preview_config,
+        }
     }
 
     pub fn empty() -> Self {
-        RulesEngine { groups: Vec::new() }
+        RulesEngine {
+            groups: Vec::new(),
+            preview_config: PreviewConfig::default(),
+        }
     }
 
     /// Returns the name of the first matching enabled rule group, or None.
@@ -371,6 +419,7 @@ mod tests {
                     }],
                 },
             ],
+            preview_config: PreviewConfig::default(),
         };
         let i = info("code.exe", "", "");
         assert_eq!(engine.apply(&i), Some("First"));
@@ -388,6 +437,7 @@ mod tests {
                     matcher: Matcher::Equals("code.exe".into(), false),
                 }],
             }],
+            preview_config: PreviewConfig::default(),
         };
         let i = info("code.exe", "", "");
         assert_eq!(engine.apply(&i), None);
@@ -411,6 +461,7 @@ mod tests {
                     },
                 ],
             }],
+            preview_config: PreviewConfig::default(),
         };
         // Both match
         let i = info("code.exe", "Chrome_WidgetWin_1", "");
@@ -439,6 +490,7 @@ mod tests {
                     },
                 ],
             }],
+            preview_config: PreviewConfig::default(),
         };
         let i = info("notepad.exe", "", "");
         assert_eq!(engine.apply(&i), Some("AnyMode"));
@@ -456,6 +508,7 @@ mod tests {
                     matcher: Matcher::Equals("x.exe".into(), false),
                 }],
             }],
+            preview_config: PreviewConfig::default(),
         };
         let i = info("y.exe", "", "");
         assert_eq!(engine.apply(&i), None);
@@ -585,6 +638,7 @@ mod tests {
                     matcher: Matcher::Contains("--profile=dev".into(), false),
                 }],
             }],
+            preview_config: PreviewConfig::default(),
         };
         let i = info_with_cmd("app.exe", "", "", "app.exe --profile=dev --verbose");
         assert_eq!(engine.apply(&i), Some("DevTools"));
@@ -632,6 +686,7 @@ mod tests {
                     matcher: Matcher::Equals("x.exe".into(), false),
                 }],
             }],
+            preview_config: PreviewConfig::default(),
         };
         assert!(!engine.uses_command_line());
     }
@@ -763,6 +818,74 @@ mod tests {
         let i_firefox = info("firefox.exe", "", "");
         assert_eq!(engine.apply(&i_firefox), None);
 
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ── Preview config tests ──
+
+    #[test]
+    fn load_with_preview_section() {
+        let dir = std::env::temp_dir().join("wintab_test_config");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("preview_full.yaml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(
+            f,
+            r#"preview:
+  width: 400
+  max_height: 500
+  opacity: 180
+  delay_ms: 250
+"#
+        )
+        .unwrap();
+        let engine = RulesEngine::load(&path);
+        assert_eq!(engine.preview_config.width, 400);
+        assert_eq!(engine.preview_config.max_height, 500);
+        assert_eq!(engine.preview_config.opacity, 180);
+        assert_eq!(engine.preview_config.delay_ms, 250);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_without_preview_section_uses_defaults() {
+        let dir = std::env::temp_dir().join("wintab_test_config");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("no_preview.yaml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(
+            f,
+            r#"rules: []
+"#
+        )
+        .unwrap();
+        let engine = RulesEngine::load(&path);
+        assert_eq!(engine.preview_config.width, 300);
+        assert_eq!(engine.preview_config.max_height, 400);
+        assert_eq!(engine.preview_config.opacity, 200);
+        assert_eq!(engine.preview_config.delay_ms, 500);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_partial_preview_config() {
+        let dir = std::env::temp_dir().join("wintab_test_config");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("preview_partial.yaml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(
+            f,
+            r#"preview:
+  width: 450
+  opacity: 150
+"#
+        )
+        .unwrap();
+        let engine = RulesEngine::load(&path);
+        assert_eq!(engine.preview_config.width, 450);
+        assert_eq!(engine.preview_config.max_height, 400); // default
+        assert_eq!(engine.preview_config.opacity, 150);
+        assert_eq!(engine.preview_config.delay_ms, 500); // default
         let _ = std::fs::remove_file(&path);
     }
 }
