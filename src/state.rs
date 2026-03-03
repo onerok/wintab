@@ -171,6 +171,20 @@ impl AppState {
                 overlay::destroy_overlay(peek_ov);
             }
         }
+
+        // Discover windows on the new desktop that were cloaked when
+        // WinTab started (or last enumerated).  enumerate_windows()
+        // skips cloaked windows, so this picks up the now-uncloaked
+        // windows on the current desktop.
+        let new_windows = window::enumerate_windows();
+        for info in new_windows {
+            if !self.windows.contains_key(&info.hwnd) {
+                let hwnd = info.hwnd;
+                self.try_restore_position(hwnd, &info);
+                self.windows.insert(info.hwnd, info);
+                self.apply_rules(hwnd);
+            }
+        }
     }
 
     /// Check virtual desktop state for all groups and hide/show overlays
@@ -364,6 +378,22 @@ impl AppState {
     pub fn on_focus_changed(&mut self, hwnd: HWND) {
         if !self.enabled {
             return;
+        }
+
+        // Track windows we haven't seen yet.  This happens when WinTab
+        // started on a different virtual desktop — windows on other
+        // desktops are DWM-cloaked during init() and rejected by
+        // is_eligible().  When the user switches desktops those windows
+        // become uncloaked but no EVENT_OBJECT_SHOW fires (DWM cloaking
+        // doesn't use ShowWindow), so on_window_created never runs.
+        // Catching them here on focus ensures tracking, auto-grouping,
+        // and peek all work across desktops.
+        if !hwnd.is_null() && !self.windows.contains_key(&hwnd) {
+            if let Some(info) = WindowInfo::from_hwnd(hwnd) {
+                self.try_restore_position(hwnd, &info);
+                self.windows.insert(info.hwnd, info);
+                self.apply_rules(hwnd);
+            }
         }
 
         // EVENT_SYSTEM_DESKTOPSWITCH is not reliably delivered via
