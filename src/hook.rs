@@ -16,6 +16,11 @@ thread_local! {
     /// messages, which would re-enter this callback and panic on the
     /// RefCell<AppState> borrow.
     static IN_HOOK: Cell<bool> = const { Cell::new(false) };
+    /// Events that arrived during a re-entrant hook call.  Instead of
+    /// silently dropping them (which loses desktop-switch and focus events),
+    /// we queue them here and drain the queue after the current handler
+    /// returns.
+    static QUEUED_EVENTS: RefCell<Vec<(u32, HWND, i32)>> = const { RefCell::new(Vec::new()) };
 }
 
 pub fn install() {
@@ -72,13 +77,32 @@ unsafe extern "system" fn win_event_proc(
     _event_thread: u32,
     _event_time: u32,
 ) {
-    // Skip re-entrant calls — COM marshaling in STA can pump messages
-    // internally, which would re-enter this callback.
+    // Re-entrant call (COM marshaling in STA can pump messages internally).
+    // Queue the event instead of dropping it so we don't lose critical
+    // desktop-switch or focus events.
     if IN_HOOK.with(|c| c.replace(true)) {
+        QUEUED_EVENTS.with(|q| q.borrow_mut().push((event, hwnd, id_object)));
         return;
     }
 
     dispatch_event(event, hwnd, id_object);
+
+    // Drain any events that were queued during this handler (e.g. a
+    // focus event that arrived while on_desktop_switch made COM calls).
+    loop {
+        let next = QUEUED_EVENTS.with(|q| {
+            let mut q = q.borrow_mut();
+            if q.is_empty() {
+                None
+            } else {
+                Some(q.remove(0))
+            }
+        });
+        match next {
+            Some((ev, hw, id)) => dispatch_event(ev, hw, id),
+            None => break,
+        }
+    }
 
     IN_HOOK.with(|c| c.set(false));
 }

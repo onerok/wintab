@@ -129,6 +129,11 @@ impl AppState {
             None => return,
         };
 
+        // The foreground window is always on the current desktop — trust
+        // this over COM which may still report stale data at the moment
+        // EVENT_SYSTEM_DESKTOPSWITCH fires.
+        let fg = unsafe { GetForegroundWindow() };
+
         // Collect group IDs and their overlay/active-hwnd to avoid borrow conflicts
         let group_info: Vec<_> = self
             .overlays
@@ -141,7 +146,13 @@ impl AppState {
             .collect();
 
         for (gid, ov, active_hwnd) in group_info {
-            if vd.is_on_current_desktop(active_hwnd) {
+            let on_current = if active_hwnd == fg {
+                true
+            } else {
+                vd.is_on_current_desktop(active_hwnd)
+            };
+
+            if on_current {
                 self.overlays.desktop_hidden.remove(&gid);
                 overlay::update_overlay(ov, gid, &self.groups, &self.windows, &self.rules.tab_colors, self.rules.tab_color_style);
             } else {
