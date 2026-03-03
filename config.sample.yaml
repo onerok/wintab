@@ -1,0 +1,111 @@
+# WinTab sample configuration
+# Copy to %APPDATA%\WinTab\config.yaml and edit to taste.
+# Changes are picked up automatically (hot-reload).
+
+# ── Auto-grouping rules ──
+# Windows matching the same rule group are automatically tabbed together.
+# Each rule group creates one tab group.
+
+rules:
+  # Group all VS Code windows together
+  - name: "VS Code"
+    patterns:
+      - field: process_name
+        op: equals
+        value: "Code.exe"
+
+  # Group all Windows Terminal windows together
+  - name: "Terminal"
+    patterns:
+      - field: process_name
+        op: equals
+        value: "WindowsTerminal.exe"
+
+  # Group by title — e.g., all windows with "Project X" in the title
+  # - name: "Project X"
+  #   patterns:
+  #     - field: title
+  #       op: contains
+  #       value: "Project X"
+
+  # Multi-pattern rule with match mode (all patterns must match)
+  # - name: "DevTools"
+  #   match: all
+  #   patterns:
+  #     - field: process_name
+  #       op: equals
+  #       value: "chrome.exe"
+  #     - field: title
+  #       op: contains
+  #       value: "DevTools"
+
+  # Disabled rule (skipped during matching)
+  # - name: "Disabled Example"
+  #   enabled: false
+  #   patterns:
+  #     - field: class_name
+  #       op: equals
+  #       value: "Notepad"
+
+# ── Tab color rules ──
+# Color individual tabs based on window metadata.
+# First matching rule wins. Windows with no match use default colors.
+# Colors are hex "#RRGGBB".
+
+tab_color_style: tint_stripe  # bottom_stripe | left_bar | top_stripe | full_tint | tint_stripe
+
+tab_colors:
+  # Color SSH sessions by host
+  - pattern:
+      field: title
+      op: contains
+      value: "SSH: prod-server"
+    color: "#CD5C5C"    # indian red — production
+
+  - pattern:
+      field: title
+      op: contains
+      value: "SSH: staging"
+    color: "#DAA520"    # goldenrod — staging
+
+  - pattern:
+      field: title
+      op: contains
+      value: "SSH: dev"
+    color: "#2E8B57"    # sea green — development
+
+  # Color by process
+  # - pattern:
+  #     field: process_name
+  #     op: equals
+  #     value: "firefox.exe"
+  #   color: "#E66000"  # firefox orange
+
+# ── Preview settings ──
+# Thumbnail preview shown on tab hover.
+
+preview:
+  width: 300         # Preview width in pixels (default: 300)
+  max_height: 400    # Max preview height in pixels (default: 400)
+  opacity: 200       # Preview opacity 0-255 (default: 200)
+  delay_ms: 500      # Hover delay before showing preview (default: 500)
+
+# ── Pattern reference ──
+#
+# Fields:
+#   process_name  — executable name (e.g., "Code.exe")
+#   class_name    — Win32 window class (e.g., "Chrome_WidgetWin_1")
+#   title         — window title bar text
+#   command_line  — full command line of the process
+#
+# Operators:
+#   equals        — exact match
+#   contains      — substring match
+#   starts_with   — prefix match
+#   ends_with     — suffix match
+#   not_equals    — negated exact match
+#   not_contains  — negated substring match
+#   regex         — regular expression
+#
+# Options:
+#   case_sensitive: true  — (default: false) enable case-sensitive matching
