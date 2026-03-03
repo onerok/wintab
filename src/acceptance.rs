@@ -3756,3 +3756,167 @@ fn acceptance_e2e_tab_color_styles() {
         DestroyWindow(win_plain);
     }
 }
+
+/// Test: overlay z-order tracks its group's active window, not TOPMOST.
+///
+/// When another window is brought to the foreground and overlaps the tab bar,
+/// the overlay should be behind (below) that window in z-order.  Previously
+/// overlays used WS_EX_TOPMOST which kept them above everything.
+#[test]
+fn acceptance_overlay_z_order_not_topmost() {
+    overlay::register_class();
+    let test_class = register_test_class();
+
+    // 1. Create two windows at a known position and group them
+    let title1: Vec<u16> = "ZOrder A\0".encode_utf16().collect();
+    let title2: Vec<u16> = "ZOrder B\0".encode_utf16().collect();
+    let title_cover: Vec<u16> = "Covering Window\0".encode_utf16().collect();
+    let instance = unsafe { GetModuleHandleW(ptr::null()) };
+
+    let win1 = unsafe {
+        CreateWindowExW(
+            0,
+            test_class.as_ptr(),
+            title1.as_ptr(),
+            WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+            200, 200, 400, 300,
+            0 as _, 0 as _, instance, ptr::null(),
+        )
+    };
+    let win2 = unsafe {
+        CreateWindowExW(
+            0,
+            test_class.as_ptr(),
+            title2.as_ptr(),
+            WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+            200, 200, 400, 300,
+            0 as _, 0 as _, instance, ptr::null(),
+        )
+    };
+    assert!(!win1.is_null());
+    assert!(!win2.is_null());
+
+    state::with_state(|s| {
+        s.windows.insert(win1, make_window_info(win1));
+        s.windows.insert(win2, make_window_info(win2));
+    });
+    pump_messages(Duration::from_millis(200));
+
+    // 2. Create group and overlay
+    let group_id = state::with_state(|s| {
+        let gid = s.groups.create_group(win1, win2);
+        let ov = s.overlays.ensure_overlay(gid);
+        overlay::update_overlay(
+            ov, gid, &s.groups, &s.windows,
+            &s.rules.tab_colors, s.rules.tab_color_style,
+        );
+        gid
+    });
+    pump_messages(Duration::from_millis(200));
+
+    let ov_hwnd = state::with_state(|s| *s.overlays.overlays.get(&group_id).unwrap());
+
+    // Assert: overlay must NOT have WS_EX_TOPMOST style
+    let ex_style = unsafe { GetWindowLongW(ov_hwnd, GWL_EXSTYLE) } as u32;
+    assert_eq!(
+        ex_style & WS_EX_TOPMOST,
+        0,
+        "overlay should not have WS_EX_TOPMOST style"
+    );
+
+    // Screenshot 01: group created, overlay visible above active window
+    screenshot::capture_window(win2, "evidence/overlay_z_order/01_group_created.png");
+
+    // 3. Create a covering window that overlaps the tab bar area and bring
+    //    it to the foreground.  Position it so it partially covers the overlay.
+    let covering = unsafe {
+        CreateWindowExW(
+            0,
+            test_class.as_ptr(),
+            title_cover.as_ptr(),
+            WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+            300, 100, 400, 300,
+            0 as _, 0 as _, instance, ptr::null(),
+        )
+    };
+    assert!(!covering.is_null());
+    unsafe {
+        SetForegroundWindow(covering);
+    }
+    pump_messages(Duration::from_millis(200));
+
+    // Screenshot 02: covering window in front — overlay should be hidden behind it
+    screenshot::capture_region(
+        180, 80, 540, 440,
+        "evidence/overlay_z_order/02_covered_by_foreground.png",
+    );
+
+    // Assert: overlay is below covering window in z-order
+    let overlay_is_below_covering = unsafe {
+        let mut current = covering;
+        let mut found = false;
+        for _ in 0..200 {
+            current = GetWindow(current, GW_HWNDNEXT);
+            if current.is_null() {
+                break;
+            }
+            if current == ov_hwnd {
+                found = true;
+                break;
+            }
+        }
+        found
+    };
+    assert!(
+        overlay_is_below_covering,
+        "overlay should be below the covering window in z-order"
+    );
+
+    // 4. Focus the grouped window — overlay should come above its active window
+    unsafe {
+        SetForegroundWindow(win1);
+    }
+    state::with_state(|s| s.on_focus_changed(win1));
+    pump_messages(Duration::from_millis(200));
+
+    // Screenshot 03: group refocused — overlay visible above active window again
+    screenshot::capture_region(
+        180, 80, 540, 440,
+        "evidence/overlay_z_order/03_refocused.png",
+    );
+
+    // Assert: overlay is above the active window (win1) in z-order
+    let overlay_is_above_active = unsafe {
+        let mut current = ov_hwnd;
+        let mut found = false;
+        for _ in 0..200 {
+            current = GetWindow(current, GW_HWNDNEXT);
+            if current.is_null() {
+                break;
+            }
+            if current == win1 {
+                found = true;
+                break;
+            }
+        }
+        found
+    };
+    assert!(
+        overlay_is_above_active,
+        "overlay should be above the active group window after focus"
+    );
+
+    // Cleanup
+    state::with_state(|s| {
+        s.groups.remove_from_group(win1);
+        s.groups.remove_from_group(win2);
+        s.windows.remove(&win1);
+        s.windows.remove(&win2);
+        s.shutdown();
+    });
+    unsafe {
+        DestroyWindow(win1);
+        DestroyWindow(win2);
+        DestroyWindow(covering);
+    }
+}

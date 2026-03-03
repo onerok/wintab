@@ -291,7 +291,7 @@ pub fn create_overlay(group_id: GroupId) -> HWND {
     unsafe {
         let instance = GetModuleHandleW(std::ptr::null());
         let hwnd = CreateWindowExW(
-            WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
+            WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
             OVERLAY_CLASS_UTF16.as_ptr(),
             std::ptr::null(),
             WS_POPUP,
@@ -604,6 +604,20 @@ fn paint_peek_tab(overlay_hwnd: HWND, rect: &RECT, info: Option<&WindowInfo>) {
     }
 }
 
+/// Compute the z-order insertion point that places the overlay just above
+/// its group's active window.  Returns the HWND to pass as `hWndInsertAfter`
+/// to `SetWindowPos`.
+pub fn overlay_insert_after(active_hwnd: HWND, overlay_hwnd: HWND) -> HWND {
+    unsafe {
+        let prev = GetWindow(active_hwnd, GW_HWNDPREV);
+        if prev.is_null() || prev == overlay_hwnd {
+            HWND_TOP
+        } else {
+            prev
+        }
+    }
+}
+
 /// Reposition and repaint an overlay. Takes disjoint fields to avoid borrow conflicts.
 pub fn update_overlay(
     overlay_hwnd: HWND,
@@ -630,11 +644,12 @@ pub fn update_overlay(
 
     let rect = group.active_rect();
     let width = rect.right - rect.left;
+    let insert_after = overlay_insert_after(group.active_hwnd(), overlay_hwnd);
 
     unsafe {
         SetWindowPos(
             overlay_hwnd,
-            HWND_TOPMOST,
+            insert_after,
             rect.left,
             rect.top - TAB_HEIGHT,
             width,

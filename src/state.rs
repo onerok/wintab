@@ -370,12 +370,13 @@ impl AppState {
                 }
             }
 
-            // Bring overlay to top
+            // Bring overlay just above the active window
             if let Some(&ov) = self.overlays.overlays.get(&gid) {
+                let insert_after = overlay::overlay_insert_after(hwnd, ov);
                 unsafe {
                     SetWindowPos(
                         ov,
-                        HWND_TOPMOST,
+                        insert_after,
                         0,
                         0,
                         0,
