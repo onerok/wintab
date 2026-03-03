@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Sub-Group Tab Coloring Mockups</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #1e1e1e;
+    color: #ccc;
+    font-family: 'Segoe UI', sans-serif;
+    font-size: 14px;
+    padding: 30px 40px;
+  }
+  h1 { color: #fff; font-size: 22px; margin-bottom: 8px; font-weight: 500; }
+  .subtitle { color: #888; font-size: 13px; margin-bottom: 40px; }
+  h2 { color: #ddd; font-size: 15px; margin-bottom: 6px; font-weight: 500; }
+  .difficulty {
+    font-size: 11px; font-weight: 400; padding: 2px 7px; border-radius: 3px;
+    margin-left: 8px; vertical-align: middle;
+  }
+  .easy { background: #2d4a2d; color: #6fbf6f; }
+  .trivial { background: #2a3d4e; color: #6fb3d6; }
+  .note { color: #777; font-size: 12px; margin-bottom: 16px; line-height: 1.5; }
+  .impl-note { color: #666; font-size: 11px; font-style: italic; margin-bottom: 24px; }
+
+  /* ---- Tab bar wrapper ---- */
+  .mockup-section { margin-bottom: 44px; }
+  .tab-bar {
+    display: inline-flex;
+    height: 28px;
+    border-radius: 0;
+    overflow: hidden;
+  }
+  .tab {
+    display: flex;
+    align-items: center;
+    height: 28px;
+    padding: 0 6px;
+    min-width: 40px;
+    max-width: 200px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 12px;
+    color: #fff;
+    position: relative;
+    cursor: default;
+    flex-shrink: 0;
+  }
+  .tab .icon {
+    width: 16px; height: 16px; margin-right: 4px; flex-shrink: 0;
+    border-radius: 2px;
+  }
+  .tab .label {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
+  /* VS Code icon placeholder colors */
+  .icon-vscode { background: #007ACC; }
+  .icon-comfy  { background: #7B3FA0; }
+  .icon-term   { background: #4EC9B0; }
+  .icon-file   { background: #C8612C; }
+
+  /* Default tab colors (from overlay.rs constants) */
+  .tab-default-active   { background: rgba(48, 96, 160, 0.86); }
+  .tab-default-inactive { background: rgba(64, 80, 112, 0.63); }
+
+  /* Color coding helper */
+  .ssh-rok5 { --rule-color: #2E8B57; --rule-light: #3CB371; --rule-dark: #1a5234; }
+  .ssh-rok7 { --rule-color: #CD5C5C; --rule-light: #E07070; --rule-dark: #7a3535; }
+  .wsl      { --rule-color: #6A5ACD; --rule-light: #8070E0; --rule-dark: #3f357a; }
+  .local    { --rule-color: transparent; }
+
+  /* ---- VS Code title bar below tabs (for context) ---- */
+  .vscode-titlebar {
+    background: #323233;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    color: #999;
+    font-size: 12px;
+    border-top: 1px solid #007ACC;
+    max-width: fit-content;
+  }
+
+  /* ============================================= */
+  /* Style A: Bottom accent stripe                 */
+  /* ============================================= */
+  .style-a .tab::after {
+    content: '';
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    height: 3px;
+    background: var(--rule-color);
+  }
+  .style-a .local::after { display: none; }
+
+  /* ============================================= */
+  /* Style B: Left edge bar                        */
+  /* ============================================= */
+  .style-b .tab::before {
+    content: '';
+    position: absolute;
+    top: 2px; bottom: 2px; left: 0;
+    width: 3px;
+    background: var(--rule-color);
+    border-radius: 0 2px 2px 0;
+  }
+  .style-b .local::before { display: none; }
+  .style-b .tab { padding-left: 8px; }
+
+  /* ============================================= */
+  /* Style C: Full background tint                 */
+  /* ============================================= */
+  .style-c .ssh-rok5.tab-active   { background: rgba(46, 139, 87, 0.75); }
+  .style-c .ssh-rok5.tab-inactive { background: rgba(46, 139, 87, 0.40); }
+  .style-c .ssh-rok7.tab-active   { background: rgba(205, 92, 92, 0.75); }
+  .style-c .ssh-rok7.tab-inactive { background: rgba(205, 92, 92, 0.40); }
+  .style-c .wsl.tab-active        { background: rgba(106, 90, 205, 0.75); }
+  .style-c .wsl.tab-inactive      { background: rgba(106, 90, 205, 0.40); }
+
+  /* ============================================= */
+  /* Style D: Background tint + bottom stripe      */
+  /* ============================================= */
+  .style-d .ssh-rok5.tab-active   { background: rgba(46, 139, 87, 0.55); }
+  .style-d .ssh-rok5.tab-inactive { background: rgba(46, 139, 87, 0.28); }
+  .style-d .ssh-rok7.tab-active   { background: rgba(205, 92, 92, 0.55); }
+  .style-d .ssh-rok7.tab-inactive { background: rgba(205, 92, 92, 0.28); }
+  .style-d .wsl.tab-active        { background: rgba(106, 90, 205, 0.55); }
+  .style-d .wsl.tab-inactive      { background: rgba(106, 90, 205, 0.28); }
+  .style-d .tab::after {
+    content: '';
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    height: 2px;
+    background: var(--rule-color);
+  }
+  .style-d .local::after { display: none; }
+
+  /* ============================================= */
+  /* Style E: Colored dot before title             */
+  /* ============================================= */
+  .style-e .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--rule-color);
+    margin-right: 4px; flex-shrink: 0;
+  }
+  .style-e .local .dot { display: none; }
+
+  /* ============================================= */
+  /* Style F: Top accent stripe                    */
+  /* ============================================= */
+  .style-f .tab::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 3px;
+    background: var(--rule-color);
+  }
+  .style-f .local::before { display: none; }
+
+  hr { border: none; border-top: 1px solid #333; margin: 36px 0; }
+  .legend {
+    display: flex; gap: 24px; margin-bottom: 32px;
+    font-size: 12px; color: #999;
+  }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .legend-swatch {
+    width: 14px; height: 14px; border-radius: 2px;
+  }
+</style>
+</head>
+<body>
+
+<h1>Sub-Group Tab Coloring — Style Mockups</h1>
+<p class="subtitle">All options use existing GDI primitives (fill_rect_alpha, per-pixel writes on the 32-bit DIB). No new Win32 APIs needed.</p>
+
+<div class="legend">
+  <div class="legend-item">
+    <div class="legend-swatch" style="background:#2E8B57"></div>
+    <span>title contains "SSH: rok5"</span>
+  </div>
+  <div class="legend-item">
+    <div class="legend-swatch" style="background:#CD5C5C"></div>
+    <span>title contains "SSH: rok7"</span>
+  </div>
+  <div class="legend-item">
+    <div class="legend-swatch" style="background:#6A5ACD"></div>
+    <span>title contains "[WSL"</span>
+  </div>
+  <div class="legend-item">
+    <div class="legend-swatch" style="background:#505060"></div>
+    <span>no rule match (default)</span>
+  </div>
+</div>
+
+<hr>
+
+<!-- ====== STYLE A ====== -->
+<div class="mockup-section">
+  <h2>A. Bottom Accent Stripe <span class="difficulty trivial">trivial</span></h2>
+  <p class="note">3px colored stripe at the bottom edge. Unmatched tabs have no stripe. Subtle — color visible but doesn't dominate.</p>
+  <p class="impl-note">fill_rect_alpha() one extra rect per matched tab. Zero impact on text legibility.</p>
+  <div class="tab-bar style-a">
+    <div class="tab tab-default-active ssh-rok5 tab-active">
+      <div class="icon icon-vscode"></div>
+      <span class="label">.env - ComfyUI [SSH: rok5]</span>
+    </div>
+    <div class="tab tab-default-inactive ssh-rok5">
+      <div class="icon icon-vscode"></div>
+      <span class="label">settings.json [SSH: rok5]</span>
+    </div>
+    <div class="tab tab-default-inactive ssh-rok7">
+      <div class="icon icon-vscode"></div>
+      <span class="label">.env - caption [SSH: rok7]</span>
+    </div>
+    <div class="tab tab-default-inactive wsl">
+      <div class="icon icon-vscode"></div>
+      <span class="label">TASK.md - nx [WSL: Ubuntu]</span>
+    </div>
+    <div class="tab tab-default-inactive local">
+      <div class="icon icon-vscode"></div>
+      <span class="label">justfile - research-grid</span>
+    </div>
+  </div>
+  <br>
+  <div class="vscode-titlebar">File&nbsp;&nbsp;&nbsp;Edit&nbsp;&nbsp;&nbsp;Selection&nbsp;&nbsp;&nbsp;View&nbsp;&nbsp;&nbsp;Go&nbsp;&nbsp;&nbsp;Run&nbsp;&nbsp;&nbsp;Terminal&nbsp;&nbsp;&nbsp;Help</div>
+</div>
+
+<!-- ====== STYLE B ====== -->
+<div class="mockup-section">
+  <h2>B. Left Edge Bar <span class="difficulty trivial">trivial</span></h2>
+  <p class="note">3px colored vertical bar on the left edge. Similar to VS Code's editor tab indicator. Subtle but scannable.</p>
+  <p class="impl-note">fill_rect_alpha() one 3px-wide rect per matched tab.</p>
+  <div class="tab-bar style-b">
+    <div class="tab tab-default-active ssh-rok5 tab-active">
+      <div class="icon icon-vscode"></div>
+      <span class="label">.env - ComfyUI [SSH: rok5]</span>
+    </div>
+    <div class="tab tab-default-inactive ssh-rok5">
+      <div class="icon icon-vscode"></div>
+      <span class="label">settings.json [SSH: rok5]</span>
+    </div>
+    <div class="tab tab-default-inactive ssh-rok7">
+      <div class="icon icon-vscode"></div>
+      <span class="label">.env - caption [SSH: rok7]</span>
+    </div>
+    <div class="tab tab-default-inactive wsl">
+      <div class="icon icon-vscode"></div>
+      <span class="label">TASK.md - nx [WSL: Ubuntu]</span>
+    </div>
+    <div class="tab tab-default-inactive local">
+      <div class="icon icon-vscode"></div>
+      <span class="label">justfile - research-grid</span>
+    </div>
+  </div>
+  <br>
+  <div class="vscode-titlebar">File&nbsp;&nbsp;&nbsp;Edit&nbsp;&nbsp;&nbsp;Selection&nbsp;&nbsp;&nbsp;View&nbsp;&nbsp;&nbsp;Go&nbsp;&nbsp;&nbsp;Run&nbsp;&nbsp;&nbsp;Terminal&nbsp;&nbsp;&nbsp;Help</div>
+</div>
+
+<!-- ====== STYLE F ====== -->
+<div class="mockup-section">
+  <h2>C. Top Accent Stripe <span class="difficulty trivial">trivial</span></h2>
+  <p class="note">3px colored stripe at the top edge. Most visible since the top is furthest from the title bar. Chrome-style.</p>
+  <p class="impl-note">fill_rect_alpha() one extra rect per matched tab. Same cost as bottom stripe.</p>
+  <div class="tab-bar style-f">
+    <div class="tab tab-default-active ssh-rok5 tab-active">
+      <div class="icon icon-vscode"></div>
+      <span class="label">.env - ComfyUI [SSH: rok5]</span>
+    </div>
+    <div class="tab tab-default-inactive ssh-rok5">
+      <div class="icon icon-vscode"></div>
+      <span class="label">settings.json [SSH: rok5]</span>
+    </div>
+    <div class="tab tab-default-inactive ssh-rok7">
+      <div class="icon icon-vscode"></div>
+      <span class="label">.env - caption [SSH: rok7]</span>
+    </div>
+    <div class="tab tab-default-inactive wsl">
+      <div class="icon icon-vscode"></div>
+      <span class="label">TASK.md - nx [WSL: Ubuntu]</span>
+    </div>
+    <div class="tab tab-default-inactive local">
+      <div class="icon icon-vscode"></div>
+      <span class="label">justfile - research-grid</span>
+    </div>
+  </div>
+  <br>
+  <div class="vscode-titlebar">File&nbsp;&nbsp;&nbsp;Edit&nbsp;&nbsp;&nbsp;Selection&nbsp;&nbsp;&nbsp;View&nbsp;&nbsp;&nbsp;Go&nbsp;&nbsp;&nbsp;Run&nbsp;&nbsp;&nbsp;Terminal&nbsp;&nbsp;&nbsp;Help</div>
+</div>
+
+<!-- ====== STYLE E ====== -->
+<div class="mockup-section">
+  <h2>D. Colored Dot Indicator <span class="difficulty easy">easy</span></h2>
+  <p class="note">Small colored circle between the icon and the title text. Compact and unambiguous. No impact on tab background.</p>
+  <p class="impl-note">Per-pixel circle write on the DIB (small loop ~7x7 pixels). Or approximate with a filled rect.</p>
+  <div class="tab-bar style-e">
+    <div class="tab tab-default-active ssh-rok5 tab-active">
+      <div class="icon icon-vscode"></div>
+      <div class="dot"></div>
+      <span class="label">.env - ComfyUI [SSH: rok5]</span>
+    </div>
+    <div class="tab tab-default-inactive ssh-rok5">
+      <div class="icon icon-vscode"></div>
+      <div class="dot"></div>
+      <span class="label">settings.json [SSH: rok5]</span>
+    </div>
+    <div class="tab tab-default-inactive ssh-rok7">
+      <div class="icon icon-vscode"></div>
+      <div class="dot"></div>
+      <span class="label">.env - caption [SSH: rok7]</span>
+    </div>
+    <div class="tab tab-default-inactive wsl">
+      <div class="icon icon-vscode"></div>
+      <div class="dot"></div>
+      <span class="label">TASK.md - nx [WSL: Ubuntu]</span>
+    </div>
+    <div class="tab tab-default-inactive local">
+      <div class="icon icon-vscode"></div>
+      <span class="label">justfile - research-grid</span>
+    </div>
+  </div>
+  <br>
+  <div class="vscode-titlebar">File&nbsp;&nbsp;&nbsp;Edit&nbsp;&nbsp;&nbsp;Selection&nbsp;&nbsp;&nbsp;View&nbsp;&nbsp;&nbsp;Go&nbsp;&nbsp;&nbsp;Run&nbsp;&nbsp;&nbsp;Terminal&nbsp;&nbsp;&nbsp;Help</div>
+</div>
+
+<!-- ====== STYLE C ====== -->
+<div class="mockup-section">
+  <h2>E. Full Background Tint <span class="difficulty trivial">trivial</span></h2>
+  <p class="note">The entire tab background uses the rule color. Most obvious — instantly scannable. Active tabs brighter, inactive dimmer.</p>
+  <p class="impl-note">Replace the color arg in the existing fill_rect_alpha() call. Literally swapping a constant. Zero new code paths.</p>
+  <div class="tab-bar style-c">
+    <div class="tab ssh-rok5 tab-active">
+      <div class="icon icon-vscode"></div>
+      <span class="label">.env - ComfyUI [SSH: rok5]</span>
+    </div>
+    <div class="tab ssh-rok5 tab-inactive">
+      <div class="icon icon-vscode"></div>
+      <span class="label">settings.json [SSH: rok5]</span>
+    </div>
+    <div class="tab ssh-rok7 tab-inactive">
+      <div class="icon icon-vscode"></div>
+      <span class="label">.env - caption [SSH: rok7]</span>
+    </div>
+    <div class="tab wsl tab-inactive">
+      <div class="icon icon-vscode"></div>
+      <span class="label">TASK.md - nx [WSL: Ubuntu]</span>
+    </div>
+    <div class="tab tab-default-inactive local">
+      <div class="icon icon-vscode"></div>
+      <span class="label">justfile - research-grid</span>
+    </div>
+  </div>
+  <br>
+  <div class="vscode-titlebar">File&nbsp;&nbsp;&nbsp;Edit&nbsp;&nbsp;&nbsp;Selection&nbsp;&nbsp;&nbsp;View&nbsp;&nbsp;&nbsp;Go&nbsp;&nbsp;&nbsp;Run&nbsp;&nbsp;&nbsp;Terminal&nbsp;&nbsp;&nbsp;Help</div>
+</div>
+
+<!-- ====== STYLE D ====== -->
+<div class="mockup-section">
+  <h2>F. Background Tint + Bottom Stripe <span class="difficulty trivial">trivial</span></h2>
+  <p class="note">Softer background tint combined with a solid bottom stripe. The stripe anchors the color when the tint is subtle; together they read clearly without being garish.</p>
+  <p class="impl-note">Two fill_rect_alpha() calls per matched tab (background + stripe). Composable — easy to make the tint lighter or heavier.</p>
+  <div class="tab-bar style-d">
+    <div class="tab ssh-rok5 tab-active">
+      <div class="icon icon-vscode"></div>
+      <span class="label">.env - ComfyUI [SSH: rok5]</span>
+    </div>
+    <div class="tab ssh-rok5 tab-inactive">
+      <div class="icon icon-vscode"></div>
+      <span class="label">settings.json [SSH: rok5]</span>
+    </div>
+    <div class="tab ssh-rok7 tab-inactive">
+      <div class="icon icon-vscode"></div>
+      <span class="label">.env - caption [SSH: rok7]</span>
+    </div>
+    <div class="tab wsl tab-inactive">
+      <div class="icon icon-vscode"></div>
+      <span class="label">TASK.md - nx [WSL: Ubuntu]</span>
+    </div>
+    <div class="tab tab-default-inactive local">
+      <div class="icon icon-vscode"></div>
+      <span class="label">justfile - research-grid</span>
+    </div>
+  </div>
+  <br>
+  <div class="vscode-titlebar">File&nbsp;&nbsp;&nbsp;Edit&nbsp;&nbsp;&nbsp;Selection&nbsp;&nbsp;&nbsp;View&nbsp;&nbsp;&nbsp;Go&nbsp;&nbsp;&nbsp;Run&nbsp;&nbsp;&nbsp;Terminal&nbsp;&nbsp;&nbsp;Help</div>
+</div>
+
+<hr>
+
+<div style="color:#666; font-size:12px; margin-top:20px; line-height:1.7;">
+  <strong style="color:#999;">Implementation notes</strong><br>
+  All styles use <code>fill_rect_alpha()</code> on the existing 32-bit ARGB DIB — no new Win32 APIs.<br>
+  Styles can be combined (e.g., left bar + background tint). Config could offer a <code>tab_color_style</code> enum.<br>
+  The dot (D) is the only one needing per-pixel circle writes — a 7x7 loop, trivial on the DIB.<br>
+  "Trivial" = swap or add one <code>fill_rect_alpha</code> call. "Easy" = small per-pixel loop.<br>
+</div>
+
+</body>
+</html>

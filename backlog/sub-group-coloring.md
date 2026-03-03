@@ -2,7 +2,11 @@
 
 ## Problem
 
-Within a tab group containing many windows from the same application (e.g., 8 VS Code windows), all tabs look identical — same icon, similar titles. Users who remote into multiple machines via VS Code SSH have no way to visually distinguish "SSH: rok5" tabs from "SSH: rok7" tabs at a glance. A sub-group coloring system lets users define pattern-based color rules that tint individual tabs within a group based on their window title (or other fields), making clusters of related tabs instantly recognizable.
+Within a tab group containing many windows from the same application (e.g., 8 VS Code windows), all tabs look identical — same icon, similar titles. Users who remote into multiple machines via VS Code SSH have no way to visually distinguish "SSH: desktop" tabs from "SSH: laptop" tabs at a glance. A sub-group coloring system lets users define pattern-based color rules that tint individual tabs within a group based on their window title (or other fields), making clusters of related tabs instantly recognizable.
+
+## Mockups
+
+See [mockups/sub-group-coloring.html](mockups/sub-group-coloring.html) for visual examples of styling options (bottom stripe, left edge bar, top stripe, dot indicator, full tint, tint + stripe).
 
 ## Location
 
