@@ -54,7 +54,12 @@ thread_local! {
         peek: None,
         suppress_events: false,
         vdesktop: None,
-        rules: RulesEngine { groups: Vec::new(), preview_config: crate::config::PreviewConfig::default() },
+        rules: RulesEngine {
+            groups: Vec::new(),
+            preview_config: crate::config::PreviewConfig::default(),
+            tab_colors: Vec::new(),
+            tab_color_style: crate::config::TabColorStyle::default(),
+        },
         position_store: PositionStore::empty(),
         preview: PreviewManager::new(),
         pending_restores: HashMap::new(),
@@ -138,7 +143,7 @@ impl AppState {
         for (gid, ov, active_hwnd) in group_info {
             if vd.is_on_current_desktop(active_hwnd) {
                 self.overlays.desktop_hidden.remove(&gid);
-                overlay::update_overlay(ov, gid, &self.groups, &self.windows);
+                overlay::update_overlay(ov, gid, &self.groups, &self.windows, &self.rules.tab_colors, self.rules.tab_color_style);
             } else {
                 self.overlays.desktop_hidden.insert(gid);
                 unsafe {
@@ -191,7 +196,7 @@ impl AppState {
 
             if on_current && was_hidden {
                 self.overlays.desktop_hidden.remove(&gid);
-                overlay::update_overlay(ov, gid, &self.groups, &self.windows);
+                overlay::update_overlay(ov, gid, &self.groups, &self.windows, &self.rules.tab_colors, self.rules.tab_color_style);
             } else if !on_current && !was_hidden {
                 self.overlays.desktop_hidden.insert(gid);
                 unsafe {
@@ -238,7 +243,7 @@ impl AppState {
         if let Some(gid) = self.groups.group_of(hwnd) {
             self.groups.remove_from_group(hwnd);
             self.overlays
-                .refresh_overlay(gid, &self.groups, &self.windows);
+                .refresh_overlay(gid, &self.groups, &self.windows, &self.rules.tab_colors, self.rules.tab_color_style);
         }
     }
 
@@ -263,7 +268,7 @@ impl AppState {
         if let Some(gid) = self.groups.group_of(hwnd) {
             if !self.overlays.desktop_hidden.contains(&gid) {
                 if let Some(&ov) = self.overlays.overlays.get(&gid) {
-                    overlay::update_overlay(ov, gid, &self.groups, &self.windows);
+                    overlay::update_overlay(ov, gid, &self.groups, &self.windows, &self.rules.tab_colors, self.rules.tab_color_style);
                     overlay::refresh_tooltip(ov);
                 }
             }
@@ -332,7 +337,7 @@ impl AppState {
 
                 if !self.overlays.desktop_hidden.contains(&gid) {
                     if let Some(&ov) = self.overlays.overlays.get(&gid) {
-                        overlay::update_overlay(ov, gid, &self.groups, &self.windows);
+                        overlay::update_overlay(ov, gid, &self.groups, &self.windows, &self.rules.tab_colors, self.rules.tab_color_style);
                     }
                 }
             }
@@ -381,7 +386,7 @@ impl AppState {
             }
         }
 
-        self.overlays.update_all(&self.groups, &self.windows);
+        self.overlays.update_all(&self.groups, &self.windows, &self.rules.tab_colors, self.rules.tab_color_style);
     }
 
     pub fn on_minimize(&mut self, hwnd: HWND) {
@@ -413,7 +418,7 @@ impl AppState {
             }
             if !self.overlays.desktop_hidden.contains(&gid) {
                 if let Some(&ov) = self.overlays.overlays.get(&gid) {
-                    overlay::update_overlay(ov, gid, &self.groups, &self.windows);
+                    overlay::update_overlay(ov, gid, &self.groups, &self.windows, &self.rules.tab_colors, self.rules.tab_color_style);
                 }
             }
         }
@@ -430,7 +435,7 @@ impl AppState {
                 }
             }
         } else {
-            self.overlays.update_all(&self.groups, &self.windows);
+            self.overlays.update_all(&self.groups, &self.windows, &self.rules.tab_colors, self.rules.tab_color_style);
         }
     }
 
@@ -446,8 +451,15 @@ impl AppState {
         let path = dir.join("config.yaml");
         let new_rules = RulesEngine::load(&path);
         let count = new_rules.groups.len();
+        let color_count = new_rules.tab_colors.len();
         self.rules = new_rules;
-        eprintln!("[config] reloaded config.yaml ({} rule groups)", count);
+        eprintln!(
+            "[config] reloaded config.yaml ({} rule groups, {} tab colors)",
+            count, color_count
+        );
+
+        // Repaint overlays with new color rules
+        self.overlays.update_all(&self.groups, &self.windows, &self.rules.tab_colors, self.rules.tab_color_style);
     }
 
     pub fn shutdown(&mut self) {
@@ -502,7 +514,7 @@ impl AppState {
             if self.groups.groups.contains_key(&gid) {
                 self.groups.add_to_group(gid, hwnd);
                 self.overlays
-                    .refresh_overlay(gid, &self.groups, &self.windows);
+                    .refresh_overlay(gid, &self.groups, &self.windows, &self.rules.tab_colors, self.rules.tab_color_style);
                 return;
             }
         }
@@ -514,7 +526,7 @@ impl AppState {
                 self.groups.named_groups.insert(group_name.clone(), gid);
                 self.try_restore_group_position(gid, &group_name);
                 let ov = self.overlays.ensure_overlay(gid);
-                overlay::update_overlay(ov, gid, &self.groups, &self.windows);
+                overlay::update_overlay(ov, gid, &self.groups, &self.windows, &self.rules.tab_colors, self.rules.tab_color_style);
                 return;
             }
         }

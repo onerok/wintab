@@ -41,6 +41,19 @@ impl Default for PreviewConfig {
     }
 }
 
+// ── Tab color style ──
+
+#[derive(Deserialize, Serialize, Default, Debug, Clone, Copy, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum TabColorStyle {
+    BottomStripe,
+    LeftBar,
+    TopStripe,
+    FullTint,
+    #[default]
+    TintStripe,
+}
+
 // ── Serde schema ──
 
 #[derive(Deserialize)]
@@ -49,6 +62,16 @@ struct ConfigFile {
     rules: Vec<RuleGroupDef>,
     #[serde(default)]
     preview: Option<PreviewConfig>,
+    #[serde(default)]
+    tab_colors: Vec<TabColorRuleDef>,
+    #[serde(default)]
+    tab_color_style: TabColorStyle,
+}
+
+#[derive(Deserialize)]
+struct TabColorRuleDef {
+    pattern: PatternDef,
+    color: String,
 }
 
 #[derive(Deserialize)]
@@ -125,10 +148,19 @@ pub struct RuleGroup {
     pub rules: Vec<WindowRule>,
 }
 
+/// A compiled tab color rule: pattern + GDI-order color.
+#[derive(Debug)]
+pub struct TabColorRule {
+    pub rule: WindowRule,
+    pub color: u32, // 0x00BBGGRR (Windows GDI byte order)
+}
+
 /// Holds all parsed rules. Created once at startup.
 pub struct RulesEngine {
     pub groups: Vec<RuleGroup>,
     pub preview_config: PreviewConfig,
+    pub tab_colors: Vec<TabColorRule>,
+    pub tab_color_style: TabColorStyle,
 }
 
 /// Info needed to evaluate rules against a window.
@@ -198,7 +230,7 @@ impl Matcher {
 }
 
 impl WindowRule {
-    fn matches(&self, info: &WindowRuleInfo) -> bool {
+    pub fn matches(&self, info: &WindowRuleInfo) -> bool {
         let value = match self.field {
             RuleField::ProcessName => info.process_name,
             RuleField::ClassName => info.class_name,
@@ -260,9 +292,28 @@ impl RulesEngine {
             .collect();
 
         let preview_config = config.preview.unwrap_or_default();
+
+        let tab_colors = config
+            .tab_colors
+            .into_iter()
+            .filter_map(|def| {
+                let rule = parse_pattern(def.pattern)?;
+                let color = match parse_hex_color(&def.color) {
+                    Some(c) => c,
+                    None => {
+                        eprintln!("WinTab: invalid tab color {:?}, skipping", def.color);
+                        return None;
+                    }
+                };
+                Some(TabColorRule { rule, color })
+            })
+            .collect();
+
         RulesEngine {
             groups,
             preview_config,
+            tab_colors,
+            tab_color_style: config.tab_color_style,
         }
     }
 
@@ -270,6 +321,8 @@ impl RulesEngine {
         RulesEngine {
             groups: Vec::new(),
             preview_config: PreviewConfig::default(),
+            tab_colors: Vec::new(),
+            tab_color_style: TabColorStyle::default(),
         }
     }
 
@@ -290,7 +343,33 @@ impl RulesEngine {
         self.groups
             .iter()
             .any(|g| g.rules.iter().any(|r| r.field == RuleField::CommandLine))
+            || self
+                .tab_colors
+                .iter()
+                .any(|tc| tc.rule.field == RuleField::CommandLine)
     }
+
+    /// Find the first matching tab color for a window.
+    #[cfg(test)]
+    pub fn match_tab_color(&self, info: &WindowRuleInfo) -> Option<u32> {
+        self.tab_colors
+            .iter()
+            .find(|tc| tc.rule.matches(info))
+            .map(|tc| tc.color)
+    }
+}
+
+/// Parse "#RRGGBB" hex string to GDI byte order (0x00BBGGRR).
+fn parse_hex_color(s: &str) -> Option<u32> {
+    let hex = s.strip_prefix('#').unwrap_or(s);
+    if hex.len() != 6 {
+        return None;
+    }
+    let rgb = u32::from_str_radix(hex, 16).ok()?;
+    let r = (rgb >> 16) & 0xFF;
+    let g = (rgb >> 8) & 0xFF;
+    let b = rgb & 0xFF;
+    Some((b << 16) | (g << 8) | r)
 }
 
 fn parse_field(s: &str) -> Option<RuleField> {
@@ -420,6 +499,8 @@ mod tests {
                 },
             ],
             preview_config: PreviewConfig::default(),
+            tab_colors: Vec::new(),
+            tab_color_style: TabColorStyle::default(),
         };
         let i = info("code.exe", "", "");
         assert_eq!(engine.apply(&i), Some("First"));
@@ -438,6 +519,8 @@ mod tests {
                 }],
             }],
             preview_config: PreviewConfig::default(),
+            tab_colors: Vec::new(),
+            tab_color_style: TabColorStyle::default(),
         };
         let i = info("code.exe", "", "");
         assert_eq!(engine.apply(&i), None);
@@ -462,6 +545,8 @@ mod tests {
                 ],
             }],
             preview_config: PreviewConfig::default(),
+            tab_colors: Vec::new(),
+            tab_color_style: TabColorStyle::default(),
         };
         // Both match
         let i = info("code.exe", "Chrome_WidgetWin_1", "");
@@ -491,6 +576,8 @@ mod tests {
                 ],
             }],
             preview_config: PreviewConfig::default(),
+            tab_colors: Vec::new(),
+            tab_color_style: TabColorStyle::default(),
         };
         let i = info("notepad.exe", "", "");
         assert_eq!(engine.apply(&i), Some("AnyMode"));
@@ -509,6 +596,8 @@ mod tests {
                 }],
             }],
             preview_config: PreviewConfig::default(),
+            tab_colors: Vec::new(),
+            tab_color_style: TabColorStyle::default(),
         };
         let i = info("y.exe", "", "");
         assert_eq!(engine.apply(&i), None);
@@ -691,6 +780,8 @@ mod tests {
                 }],
             }],
             preview_config: PreviewConfig::default(),
+            tab_colors: Vec::new(),
+            tab_color_style: TabColorStyle::default(),
         };
         let i = info_with_cmd("app.exe", "", "", "app.exe --profile=dev --verbose");
         assert_eq!(engine.apply(&i), Some("DevTools"));
@@ -739,6 +830,8 @@ mod tests {
                 }],
             }],
             preview_config: PreviewConfig::default(),
+            tab_colors: Vec::new(),
+            tab_color_style: TabColorStyle::default(),
         };
         assert!(!engine.uses_command_line());
     }
@@ -938,6 +1031,172 @@ mod tests {
         assert_eq!(engine.preview_config.max_height, 400); // default
         assert_eq!(engine.preview_config.opacity, 150);
         assert_eq!(engine.preview_config.delay_ms, 500); // default
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ── Tab color tests ──
+
+    #[test]
+    fn parse_hex_color_basic() {
+        // #2E8B57 → R=0x2E, G=0x8B, B=0x57 → GDI = 0x00578B2E
+        assert_eq!(parse_hex_color("#2E8B57"), Some(0x00578B2E));
+    }
+
+    #[test]
+    fn parse_hex_color_without_hash() {
+        assert_eq!(parse_hex_color("FF0000"), Some(0x000000FF));
+    }
+
+    #[test]
+    fn parse_hex_color_white() {
+        assert_eq!(parse_hex_color("#FFFFFF"), Some(0x00FFFFFF));
+    }
+
+    #[test]
+    fn parse_hex_color_black() {
+        assert_eq!(parse_hex_color("#000000"), Some(0x00000000));
+    }
+
+    #[test]
+    fn parse_hex_color_pure_red() {
+        // #FF0000 → R=0xFF, G=0, B=0 → GDI = 0x000000FF
+        assert_eq!(parse_hex_color("#FF0000"), Some(0x000000FF));
+    }
+
+    #[test]
+    fn parse_hex_color_pure_blue() {
+        // #0000FF → R=0, G=0, B=0xFF → GDI = 0x00FF0000
+        assert_eq!(parse_hex_color("#0000FF"), Some(0x00FF0000));
+    }
+
+    #[test]
+    fn parse_hex_color_invalid_length() {
+        assert_eq!(parse_hex_color("#FFF"), None);
+        assert_eq!(parse_hex_color("#FFFFFFF"), None);
+    }
+
+    #[test]
+    fn parse_hex_color_invalid_chars() {
+        assert_eq!(parse_hex_color("#GGHHII"), None);
+    }
+
+    #[test]
+    fn tab_color_style_default_is_tint_stripe() {
+        assert_eq!(TabColorStyle::default(), TabColorStyle::TintStripe);
+    }
+
+    #[test]
+    fn tab_color_style_serde_roundtrip() {
+        let styles = [
+            ("\"bottom_stripe\"", TabColorStyle::BottomStripe),
+            ("\"left_bar\"", TabColorStyle::LeftBar),
+            ("\"top_stripe\"", TabColorStyle::TopStripe),
+            ("\"full_tint\"", TabColorStyle::FullTint),
+            ("\"tint_stripe\"", TabColorStyle::TintStripe),
+        ];
+        for (yaml, expected) in styles {
+            let parsed: TabColorStyle = serde_yaml::from_str(yaml).unwrap();
+            assert_eq!(parsed, expected);
+        }
+    }
+
+    #[test]
+    fn load_tab_colors_yaml() {
+        let dir = std::env::temp_dir().join("wintab_test_config");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("tab_colors.yaml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(
+            f,
+            r##"tab_color_style: bottom_stripe
+
+tab_colors:
+  - pattern:
+      field: title
+      op: contains
+      value: "SSH: rok5"
+    color: "#2E8B57"
+  - pattern:
+      field: title
+      op: contains
+      value: "SSH: rok7"
+    color: "#CD5C5C"
+"##
+        )
+        .unwrap();
+        let engine = RulesEngine::load(&path);
+        assert_eq!(engine.tab_color_style, TabColorStyle::BottomStripe);
+        assert_eq!(engine.tab_colors.len(), 2);
+        assert_eq!(engine.tab_colors[0].color, 0x00578B2E); // #2E8B57 swapped
+        assert_eq!(engine.tab_colors[1].color, 0x005C5CCD); // #CD5C5C swapped
+
+        let i = info("code.exe", "", "SSH: rok5 - main.rs");
+        assert_eq!(engine.match_tab_color(&i), Some(0x00578B2E));
+
+        let i2 = info("code.exe", "", "something else");
+        assert_eq!(engine.match_tab_color(&i2), None);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_tab_colors_invalid_color_skipped() {
+        let dir = std::env::temp_dir().join("wintab_test_config");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("tab_colors_bad.yaml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(
+            f,
+            r##"tab_colors:
+  - pattern:
+      field: title
+      op: contains
+      value: "test"
+    color: "not-a-color"
+  - pattern:
+      field: title
+      op: contains
+      value: "test2"
+    color: "#FF0000"
+"##
+        )
+        .unwrap();
+        let engine = RulesEngine::load(&path);
+        assert_eq!(engine.tab_colors.len(), 1);
+        assert_eq!(engine.tab_colors[0].color, 0x000000FF); // #FF0000 → GDI
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn uses_command_line_includes_tab_color_rules() {
+        let dir = std::env::temp_dir().join("wintab_test_config");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("tab_colors_cmd.yaml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(
+            f,
+            r##"tab_colors:
+  - pattern:
+      field: command_line
+      op: contains
+      value: "--ssh"
+    color: "#00FF00"
+"##
+        )
+        .unwrap();
+        let engine = RulesEngine::load(&path);
+        assert!(engine.uses_command_line());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_default_tab_color_style() {
+        let dir = std::env::temp_dir().join("wintab_test_config");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("no_style.yaml");
+        std::fs::write(&path, "rules: []\n").unwrap();
+        let engine = RulesEngine::load(&path);
+        assert_eq!(engine.tab_color_style, TabColorStyle::TintStripe);
         let _ = std::fs::remove_file(&path);
     }
 }

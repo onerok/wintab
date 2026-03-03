@@ -13,6 +13,7 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::{NMTTDISPINFOW, TTM_GETTOOLCOUNT, TTN_GETDISPINFOW};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
+use crate::config::{Matcher, RuleField, TabColorRule, TabColorStyle, WindowRule};
 use crate::hook;
 use crate::overlay;
 use crate::screenshot;
@@ -125,7 +126,7 @@ fn acceptance_group_lifecycle() {
     let group_id = state::with_state(|s| {
         let gid = s.groups.create_group(win1, win2);
         let ov = s.overlays.ensure_overlay(gid);
-        overlay::update_overlay(ov, gid, &s.groups, &s.windows);
+        overlay::update_overlay(ov, gid, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
         gid
     });
 
@@ -193,7 +194,7 @@ fn acceptance_group_lifecycle() {
     // 12. Ungroup: remove win1 from the group (dissolves the 2-tab group)
     state::with_state(|s| {
         s.groups.remove_from_group(win1);
-        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows);
+        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
     });
 
     pump_messages(Duration::from_millis(100));
@@ -278,7 +279,7 @@ fn acceptance_add_third_window_to_group() {
     let group_id = state::with_state(|s| {
         let gid = s.groups.create_group(win1, win2);
         let ov = s.overlays.ensure_overlay(gid);
-        overlay::update_overlay(ov, gid, &s.groups, &s.windows);
+        overlay::update_overlay(ov, gid, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
         gid
     });
 
@@ -294,7 +295,7 @@ fn acceptance_add_third_window_to_group() {
     state::with_state(|s| {
         s.groups.add_to_group(group_id, win3);
         let ov = s.overlays.ensure_overlay(group_id);
-        overlay::update_overlay(ov, group_id, &s.groups, &s.windows);
+        overlay::update_overlay(ov, group_id, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
     });
 
     pump_messages(Duration::from_millis(100));
@@ -338,7 +339,7 @@ fn acceptance_add_third_window_to_group() {
         s.groups.remove_from_group(win1);
         s.groups.remove_from_group(win2);
         s.groups.remove_from_group(win3);
-        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows);
+        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
         s.windows.remove(&win1);
         s.windows.remove(&win2);
         s.windows.remove(&win3);
@@ -405,6 +406,8 @@ fn acceptance_peek_cleared_after_group_creation() {
             gid,
             &s.groups,
             &s.windows,
+            &s.rules.tab_colors,
+            s.rules.tab_color_style,
         );
     });
 
@@ -554,7 +557,7 @@ fn acceptance_peek_candidate_excludes_grouped() {
     state::with_state(|s| {
         s.groups.remove_from_group(win1);
         s.groups.remove_from_group(win2);
-        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows);
+        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
         s.windows.remove(&win1);
         s.windows.remove(&win2);
         s.windows.remove(&win3);
@@ -593,7 +596,7 @@ fn acceptance_add_to_group_updates_overlay() {
     let group_id = state::with_state(|s| {
         let gid = s.groups.create_group(win1, win2);
         let ov = s.overlays.ensure_overlay(gid);
-        overlay::update_overlay(ov, gid, &s.groups, &s.windows);
+        overlay::update_overlay(ov, gid, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
         gid
     });
 
@@ -605,7 +608,7 @@ fn acceptance_add_to_group_updates_overlay() {
 
         // Refresh overlay after adding
         let ov = s.overlays.ensure_overlay(group_id);
-        overlay::update_overlay(ov, group_id, &s.groups, &s.windows);
+        overlay::update_overlay(ov, group_id, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
     });
 
     pump_messages(Duration::from_millis(100));
@@ -653,7 +656,7 @@ fn acceptance_add_to_group_updates_overlay() {
         s.groups.remove_from_group(win1);
         s.groups.remove_from_group(win2);
         s.groups.remove_from_group(win3);
-        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows);
+        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
         s.windows.remove(&win1);
         s.windows.remove(&win2);
         s.windows.remove(&win3);
@@ -702,7 +705,7 @@ fn acceptance_ungroup_then_peek() {
     // Ungroup: remove win1 (dissolves the 2-tab group)
     state::with_state(|s| {
         s.groups.remove_from_group(win1);
-        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows);
+        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
     });
 
     pump_messages(Duration::from_millis(100));
@@ -815,7 +818,7 @@ fn acceptance_minimize_restore_group() {
     let group_id = state::with_state(|s| {
         let gid = s.groups.create_group(win1, win2);
         let ov = s.overlays.ensure_overlay(gid);
-        overlay::update_overlay(ov, gid, &s.groups, &s.windows);
+        overlay::update_overlay(ov, gid, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
         gid
     });
 
@@ -875,7 +878,7 @@ fn acceptance_minimize_restore_group() {
     state::with_state(|s| {
         s.groups.remove_from_group(win1);
         s.groups.remove_from_group(win2);
-        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows);
+        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
         s.windows.remove(&win1);
         s.windows.remove(&win2);
         s.shutdown();
@@ -1036,7 +1039,7 @@ fn acceptance_switch_through_all_tabs() {
         let gid = s.groups.create_group(win1, win2);
         s.groups.add_to_group(gid, win3);
         let ov = s.overlays.ensure_overlay(gid);
-        overlay::update_overlay(ov, gid, &s.groups, &s.windows);
+        overlay::update_overlay(ov, gid, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
         gid
     });
 
@@ -1103,7 +1106,7 @@ fn acceptance_switch_through_all_tabs() {
         s.groups.remove_from_group(win1);
         s.groups.remove_from_group(win2);
         s.groups.remove_from_group(win3);
-        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows);
+        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
         s.windows.remove(&win1);
         s.windows.remove(&win2);
         s.windows.remove(&win3);
@@ -1179,7 +1182,7 @@ fn acceptance_multiple_independent_groups() {
     // Dissolve group A — group B should survive
     state::with_state(|s| {
         s.groups.remove_from_group(win_a1);
-        s.overlays.refresh_overlay(gid_a, &s.groups, &s.windows);
+        s.overlays.refresh_overlay(gid_a, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
     });
 
     pump_messages(Duration::from_millis(50));
@@ -1198,7 +1201,7 @@ fn acceptance_multiple_independent_groups() {
     state::with_state(|s| {
         s.groups.remove_from_group(win_b1);
         s.groups.remove_from_group(win_b2);
-        s.overlays.refresh_overlay(gid_b, &s.groups, &s.windows);
+        s.overlays.refresh_overlay(gid_b, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
         s.windows.remove(&win_a1);
         s.windows.remove(&win_a2);
         s.windows.remove(&win_b1);
@@ -1325,7 +1328,7 @@ fn acceptance_toggle_enabled() {
     let group_id = state::with_state(|s| {
         let gid = s.groups.create_group(win1, win2);
         let ov = s.overlays.ensure_overlay(gid);
-        overlay::update_overlay(ov, gid, &s.groups, &s.windows);
+        overlay::update_overlay(ov, gid, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
         gid
     });
 
@@ -1377,7 +1380,7 @@ fn acceptance_toggle_enabled() {
     state::with_state(|s| {
         s.groups.remove_from_group(win1);
         s.groups.remove_from_group(win2);
-        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows);
+        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
         s.windows.remove(&win1);
         s.windows.remove(&win2);
         s.shutdown();
@@ -1417,7 +1420,7 @@ fn acceptance_desktop_switch_overlay_visibility() {
     let group_id = state::with_state(|s| {
         let gid = s.groups.create_group(win1, win2);
         let ov = s.overlays.ensure_overlay(gid);
-        overlay::update_overlay(ov, gid, &s.groups, &s.windows);
+        overlay::update_overlay(ov, gid, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
         gid
     });
 
@@ -1445,7 +1448,7 @@ fn acceptance_desktop_switch_overlay_visibility() {
     state::with_state(|s| {
         s.groups.remove_from_group(win1);
         s.groups.remove_from_group(win2);
-        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows);
+        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
         s.windows.remove(&win1);
         s.windows.remove(&win2);
         s.shutdown();
@@ -1514,7 +1517,7 @@ fn acceptance_tooltip_created_with_overlay() {
     let group_id = state::with_state(|s| {
         let gid = s.groups.create_group(win1, win2);
         let ov = s.overlays.ensure_overlay(gid);
-        overlay::update_overlay(ov, gid, &s.groups, &s.windows);
+        overlay::update_overlay(ov, gid, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
         gid
     });
 
@@ -1599,7 +1602,7 @@ fn acceptance_tooltip_shows_truncated_title() {
     let group_id = state::with_state(|s| {
         let gid = s.groups.create_group(win1, win2);
         let ov = s.overlays.ensure_overlay(gid);
-        overlay::update_overlay(ov, gid, &s.groups, &s.windows);
+        overlay::update_overlay(ov, gid, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
         gid
     });
 
@@ -1710,6 +1713,8 @@ fn acceptance_rules_auto_group_two_matching_windows() {
                 }],
             }],
             preview_config: PreviewConfig::default(),
+            tab_colors: Vec::new(),
+            tab_color_style: TabColorStyle::default(),
         };
 
         // Insert windows — win1 and win2 match, win_solo doesn't
@@ -1775,10 +1780,7 @@ fn acceptance_rules_auto_group_two_matching_windows() {
         s.groups.remove_from_group(win1);
         s.groups.remove_from_group(win2);
         s.windows.clear();
-        s.rules = RulesEngine {
-            groups: Vec::new(),
-            preview_config: PreviewConfig::default(),
-        };
+        s.rules = RulesEngine::empty();
     });
 
     unsafe {
@@ -1816,6 +1818,8 @@ fn acceptance_rules_third_window_joins_existing_group() {
                 }],
             }],
             preview_config: PreviewConfig::default(),
+            tab_colors: Vec::new(),
+            tab_color_style: TabColorStyle::default(),
         };
 
         s.windows.insert(
@@ -1856,10 +1860,7 @@ fn acceptance_rules_third_window_joins_existing_group() {
         s.groups.remove_from_group(win2);
         s.groups.remove_from_group(win3);
         s.windows.clear();
-        s.rules = RulesEngine {
-            groups: Vec::new(),
-            preview_config: PreviewConfig::default(),
-        };
+        s.rules = RulesEngine::empty();
     });
 
     unsafe {
@@ -1895,6 +1896,8 @@ fn acceptance_rules_disabled_rule_skipped() {
                 }],
             }],
             preview_config: PreviewConfig::default(),
+            tab_colors: Vec::new(),
+            tab_color_style: TabColorStyle::default(),
         };
 
         s.windows
@@ -1920,10 +1923,7 @@ fn acceptance_rules_disabled_rule_skipped() {
 
         // Cleanup
         s.windows.clear();
-        s.rules = RulesEngine {
-            groups: Vec::new(),
-            preview_config: PreviewConfig::default(),
-        };
+        s.rules = RulesEngine::empty();
     });
 
     unsafe {
@@ -1956,6 +1956,8 @@ fn acceptance_pending_singleton_cleaned_on_destroy() {
                 }],
             }],
             preview_config: PreviewConfig::default(),
+            tab_colors: Vec::new(),
+            tab_color_style: TabColorStyle::default(),
         };
 
         s.windows
@@ -1972,10 +1974,7 @@ fn acceptance_pending_singleton_cleaned_on_destroy() {
         );
 
         // Cleanup
-        s.rules = RulesEngine {
-            groups: Vec::new(),
-            preview_config: PreviewConfig::default(),
-        };
+        s.rules = RulesEngine::empty();
     });
 
     unsafe {
@@ -2213,6 +2212,8 @@ fn acceptance_rules_e2e_auto_group() {
                 }],
             }],
             preview_config: PreviewConfig::default(),
+            tab_colors: Vec::new(),
+            tab_color_style: TabColorStyle::default(),
         };
 
         for info in &discovered {
@@ -2275,7 +2276,7 @@ fn acceptance_rules_e2e_auto_group() {
     // Update overlay after switch
     state::with_state(|s| {
         let ov = *s.overlays.overlays.get(&group_id).unwrap();
-        overlay::update_overlay(ov, group_id, &s.groups, &s.windows);
+        overlay::update_overlay(ov, group_id, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
     });
 
     pump_messages(Duration::from_millis(200));
@@ -2292,10 +2293,7 @@ fn acceptance_rules_e2e_auto_group() {
         s.groups.remove_from_group(discovered[0].hwnd);
         s.groups.remove_from_group(discovered[1].hwnd);
         s.windows.clear();
-        s.rules = crate::config::RulesEngine {
-            groups: Vec::new(),
-            preview_config: crate::config::PreviewConfig::default(),
-        };
+        s.rules = crate::config::RulesEngine::empty();
         s.groups.pending_rules.clear();
         s.groups.named_groups.clear();
         s.shutdown();
@@ -2376,7 +2374,7 @@ fn acceptance_e2e_group_lifecycle() {
     let group_id = state::with_state(|s| {
         let gid = s.groups.create_group(win1, win2);
         let ov = s.overlays.ensure_overlay(gid);
-        overlay::update_overlay(ov, gid, &s.groups, &s.windows);
+        overlay::update_overlay(ov, gid, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
         gid
     });
 
@@ -2430,7 +2428,7 @@ fn acceptance_e2e_group_lifecycle() {
     // Update overlay after switch
     state::with_state(|s| {
         let ov = *s.overlays.overlays.get(&group_id).unwrap();
-        overlay::update_overlay(ov, group_id, &s.groups, &s.windows);
+        overlay::update_overlay(ov, group_id, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
     });
 
     pump_messages(Duration::from_millis(100));
@@ -2441,7 +2439,7 @@ fn acceptance_e2e_group_lifecycle() {
     // Phase 4: Ungroup
     state::with_state(|s| {
         s.groups.remove_from_group(win1);
-        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows);
+        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
     });
 
     pump_messages(Duration::from_millis(200));
@@ -2563,7 +2561,7 @@ fn acceptance_e2e_minimize_restore() {
     let group_id = state::with_state(|s| {
         let gid = s.groups.create_group(win1, win2);
         let ov = s.overlays.ensure_overlay(gid);
-        overlay::update_overlay(ov, gid, &s.groups, &s.windows);
+        overlay::update_overlay(ov, gid, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
         gid
     });
 
@@ -2625,7 +2623,7 @@ fn acceptance_e2e_minimize_restore() {
     state::with_state(|s| {
         s.groups.remove_from_group(win1);
         s.groups.remove_from_group(win2);
-        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows);
+        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
         s.windows.clear();
         s.shutdown();
     });
@@ -2676,7 +2674,7 @@ fn acceptance_desktop_switch_hides_overlay_through_focus_change() {
     let group_id = state::with_state(|s| {
         let gid = s.groups.create_group(win1, win2);
         let ov = s.overlays.ensure_overlay(gid);
-        overlay::update_overlay(ov, gid, &s.groups, &s.windows);
+        overlay::update_overlay(ov, gid, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
         gid
     });
 
@@ -2802,7 +2800,7 @@ fn acceptance_desktop_switch_hides_overlay_through_focus_change() {
     state::with_state(|s| {
         s.groups.remove_from_group(win1);
         s.groups.remove_from_group(win2);
-        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows);
+        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
         s.windows.clear();
         s.shutdown();
     });
@@ -2938,7 +2936,7 @@ fn acceptance_e2e_real_desktop_switch() {
     let group_id = state::with_state(|s| {
         let gid = s.groups.create_group(win1, win2);
         let ov = s.overlays.ensure_overlay(gid);
-        overlay::update_overlay(ov, gid, &s.groups, &s.windows);
+        overlay::update_overlay(ov, gid, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
         gid
     });
 
@@ -3072,7 +3070,7 @@ fn acceptance_e2e_real_desktop_switch() {
     state::with_state(|s| {
         s.groups.remove_from_group(win1);
         s.groups.remove_from_group(win2);
-        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows);
+        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
         s.windows.clear();
         s.shutdown();
     });
@@ -3173,7 +3171,7 @@ fn acceptance_e2e_phantom_screenshot() {
     let group_id = state::with_state(|s| {
         let gid = s.groups.create_group(win1, win2);
         let ov = s.overlays.ensure_overlay(gid);
-        overlay::update_overlay(ov, gid, &s.groups, &s.windows);
+        overlay::update_overlay(ov, gid, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
         gid
     });
 
@@ -3259,7 +3257,7 @@ fn acceptance_e2e_phantom_screenshot() {
     state::with_state(|s| {
         s.groups.remove_from_group(win1);
         s.groups.remove_from_group(win2);
-        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows);
+        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
         s.windows.clear();
         s.shutdown();
     });
@@ -3347,7 +3345,7 @@ fn acceptance_e2e_tab_preview() {
     let (group_id, ov_hwnd) = state::with_state(|s| {
         let gid = s.groups.create_group(win1, win2);
         let ov = s.overlays.ensure_overlay(gid);
-        overlay::update_overlay(ov, gid, &s.groups, &s.windows);
+        overlay::update_overlay(ov, gid, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
         // win2 is active (index 1). Switch to win1 (index 0) so win2 is hidden.
         let group = s.groups.groups.get_mut(&gid).unwrap();
         group.switch_to(0);
@@ -3358,7 +3356,7 @@ fn acceptance_e2e_tab_preview() {
 
     // Refresh overlay after switch
     state::with_state(|s| {
-        overlay::update_overlay(ov_hwnd, group_id, &s.groups, &s.windows);
+        overlay::update_overlay(ov_hwnd, group_id, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
     });
 
     pump_messages(Duration::from_millis(100));
@@ -3471,7 +3469,7 @@ fn acceptance_e2e_tab_preview() {
     state::with_state(|s| {
         s.preview.destroy();
         s.groups.remove_from_group(win1);
-        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows);
+        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
         s.windows.clear();
         s.shutdown();
     });
@@ -3513,7 +3511,7 @@ fn acceptance_tab_click_keeps_overlay_visible() {
     let group_id = state::with_state(|s| {
         let gid = s.groups.create_group(win1, win2);
         let ov = s.overlays.ensure_overlay(gid);
-        overlay::update_overlay(ov, gid, &s.groups, &s.windows);
+        overlay::update_overlay(ov, gid, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
         gid
     });
 
@@ -3541,7 +3539,7 @@ fn acceptance_tab_click_keeps_overlay_visible() {
             group.switch_to(0);
         }
         if let Some(&ov) = s.overlays.overlays.get(&group_id) {
-            overlay::update_overlay(ov, group_id, &s.groups, &s.windows);
+            overlay::update_overlay(ov, group_id, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
         }
     });
 
@@ -3620,7 +3618,7 @@ fn acceptance_tab_click_keeps_overlay_visible() {
     state::with_state(|s| {
         s.groups.remove_from_group(win1);
         s.groups.remove_from_group(win2);
-        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows);
+        s.overlays.refresh_overlay(group_id, &s.groups, &s.windows, &s.rules.tab_colors, s.rules.tab_color_style);
         s.windows.remove(&win1);
         s.windows.remove(&win2);
         s.shutdown();
@@ -3628,5 +3626,133 @@ fn acceptance_tab_click_keeps_overlay_visible() {
     unsafe {
         DestroyWindow(win1);
         DestroyWindow(win2);
+    }
+}
+
+/// E2E test: tab color rules render colored tabs with each style.
+///
+/// Creates 3 windows with distinct titles, sets up tab color rules matching
+/// two of them, groups all three, and verifies colored overlay rendering
+/// across all 5 styles with screenshot evidence.
+#[test]
+fn acceptance_e2e_tab_color_styles() {
+    overlay::register_class();
+    let test_class = register_test_class();
+
+    // 1. Create 3 test windows with distinct titles
+    let win_ssh5 = create_test_window(&test_class, "SSH: rok5 - Code");
+    let win_ssh7 = create_test_window(&test_class, "SSH: rok7 - Code");
+    let win_plain = create_test_window(&test_class, "Local Editor");
+    assert!(!win_ssh5.is_null());
+    assert!(!win_ssh7.is_null());
+    assert!(!win_plain.is_null());
+
+    pump_messages(Duration::from_millis(200));
+
+    // 2. Insert into state
+    state::with_state(|s| {
+        s.windows.insert(win_ssh5, make_window_info(win_ssh5));
+        s.windows.insert(win_ssh7, make_window_info(win_ssh7));
+        s.windows.insert(win_plain, make_window_info(win_plain));
+    });
+
+    // 3. Build tab color rules: green for rok5, red for rok7, no rule for plain
+    let color_rules = vec![
+        TabColorRule {
+            rule: WindowRule {
+                field: RuleField::Title,
+                matcher: Matcher::Contains("SSH: rok5".into(), false),
+            },
+            color: 0x00578B2E, // #2E8B57 sea green in GDI order
+        },
+        TabColorRule {
+            rule: WindowRule {
+                field: RuleField::Title,
+                matcher: Matcher::Contains("SSH: rok7".into(), false),
+            },
+            color: 0x005C5CCD, // #CD5C5C indian red in GDI order
+        },
+    ];
+
+    // 4. Test each style: create group, render with color rules, screenshot, cleanup
+    let styles = [
+        (TabColorStyle::TintStripe, "tint_stripe"),
+        (TabColorStyle::BottomStripe, "bottom_stripe"),
+        (TabColorStyle::LeftBar, "left_bar"),
+        (TabColorStyle::TopStripe, "top_stripe"),
+        (TabColorStyle::FullTint, "full_tint"),
+    ];
+
+    for (style, style_name) in &styles {
+        // Create group
+        let group_id = state::with_state(|s| {
+            let gid = s.groups.create_group(win_ssh5, win_ssh7);
+            s.groups.add_to_group(gid, win_plain);
+            let ov = s.overlays.ensure_overlay(gid);
+            overlay::update_overlay(ov, gid, &s.groups, &s.windows, &color_rules, *style);
+            gid
+        });
+
+        pump_messages(Duration::from_millis(200));
+
+        // Verify overlay exists and is visible
+        let ov_hwnd = state::with_state(|s| {
+            *s.overlays.overlays.get(&group_id).expect("Overlay missing")
+        });
+        unsafe {
+            assert_ne!(
+                IsWindowVisible(ov_hwnd),
+                0,
+                "Overlay not visible for style {style_name}"
+            );
+        }
+
+        // Verify group has 3 tabs
+        state::with_state(|s| {
+            let group = s.groups.groups.get(&group_id).expect("Group missing");
+            assert_eq!(group.tabs.len(), 3, "Should have 3 tabs for {style_name}");
+        });
+
+        // Screenshot evidence for this style
+        let path = format!("evidence/tab_color_styles/{style_name}.png");
+        screenshot::capture_window(win_ssh5, &path);
+
+        // Also switch to ssh7 tab and screenshot (second colored tab active)
+        state::with_state(|s| {
+            let group = s.groups.groups.get_mut(&group_id).unwrap();
+            group.switch_to(1); // win_ssh7
+        });
+        pump_messages(Duration::from_millis(100));
+
+        state::with_state(|s| {
+            let ov = *s.overlays.overlays.get(&group_id).unwrap();
+            overlay::update_overlay(ov, group_id, &s.groups, &s.windows, &color_rules, *style);
+        });
+        pump_messages(Duration::from_millis(100));
+
+        let path2 = format!("evidence/tab_color_styles/{style_name}_tab2_active.png");
+        screenshot::capture_window(win_ssh7, &path2);
+
+        // Cleanup group for next iteration
+        state::with_state(|s| {
+            s.groups.remove_from_group(win_ssh5);
+            s.groups.remove_from_group(win_ssh7);
+            s.groups.remove_from_group(win_plain);
+            s.overlays.refresh_overlay(group_id, &s.groups, &s.windows, &color_rules, *style);
+        });
+        pump_messages(Duration::from_millis(100));
+    }
+
+    // 5. Final cleanup
+    state::with_state(|s| {
+        s.windows.remove(&win_ssh5);
+        s.windows.remove(&win_ssh7);
+        s.windows.remove(&win_plain);
+        s.shutdown();
+    });
+    unsafe {
+        DestroyWindow(win_ssh5);
+        DestroyWindow(win_ssh7);
+        DestroyWindow(win_plain);
     }
 }

@@ -13,6 +13,7 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
+use crate::config::{TabColorRule, TabColorStyle, WindowRuleInfo};
 use crate::drag;
 use crate::group::{GroupId, GroupManager};
 use crate::state;
@@ -30,6 +31,169 @@ const COLOR_ACTIVE: u32 = 0x00A06030;
 const COLOR_INACTIVE: u32 = 0x00705040;
 const COLOR_HOVER: u32 = 0x00C08050;
 const COLOR_TEXT: u32 = 0x00FFFFFF;
+
+// ── Tab color types ──
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AccentPosition {
+    Top,
+    Bottom,
+    Left,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct AccentStripe {
+    pub color: u32,
+    pub position: AccentPosition,
+    pub thickness: i32,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct TabColors {
+    pub bg: u32,
+    pub alpha: u8,
+    pub accent: Option<AccentStripe>,
+}
+
+/// Darken a GDI color (0x00BBGGRR) by a factor (0.0–1.0).
+fn darken(color: u32, factor: f32) -> u32 {
+    let r = ((color & 0xFF) as f32 * factor).min(255.0) as u32;
+    let g = (((color >> 8) & 0xFF) as f32 * factor).min(255.0) as u32;
+    let b = (((color >> 16) & 0xFF) as f32 * factor).min(255.0) as u32;
+    (b << 16) | (g << 8) | r
+}
+
+/// Lighten a GDI color (0x00BBGGRR) by a factor (>1.0 brightens).
+fn lighten(color: u32, factor: f32) -> u32 {
+    let r = ((color & 0xFF) as f32 * factor).min(255.0) as u32;
+    let g = (((color >> 8) & 0xFF) as f32 * factor).min(255.0) as u32;
+    let b = (((color >> 16) & 0xFF) as f32 * factor).min(255.0) as u32;
+    (b << 16) | (g << 8) | r
+}
+
+/// Resolve tab colors for a window, given the color rules and style.
+fn resolve_tab_color(
+    info: &WindowInfo,
+    rules: &[TabColorRule],
+    style: TabColorStyle,
+    is_active: bool,
+    is_hover: bool,
+) -> TabColors {
+    let empty = String::new();
+    let cmd = info.command_line.as_ref().unwrap_or(&empty);
+    let rule_info = WindowRuleInfo {
+        process_name: &info.process_name,
+        class_name: &info.class_name,
+        title: &info.title,
+        command_line: cmd,
+    };
+
+    let matched_color = rules
+        .iter()
+        .find(|tc| tc.rule.matches(&rule_info))
+        .map(|tc| tc.color);
+
+    let base_color = match matched_color {
+        Some(c) => c,
+        None => {
+            // No match: use defaults, no accent
+            let (bg, alpha) = if is_hover {
+                (COLOR_HOVER, 220u8)
+            } else if is_active {
+                (COLOR_ACTIVE, 220)
+            } else {
+                (COLOR_INACTIVE, 160)
+            };
+            return TabColors {
+                bg,
+                alpha,
+                accent: None,
+            };
+        }
+    };
+
+    match style {
+        TabColorStyle::FullTint => {
+            let (bg, alpha) = if is_hover {
+                (lighten(base_color, 1.3), 220)
+            } else if is_active {
+                (base_color, 220)
+            } else {
+                (darken(base_color, 0.6), 160)
+            };
+            TabColors {
+                bg,
+                alpha,
+                accent: None,
+            }
+        }
+        TabColorStyle::TintStripe => {
+            let (bg, alpha) = if is_hover {
+                (lighten(base_color, 1.3), 200)
+            } else if is_active {
+                (darken(base_color, 0.8), 200)
+            } else {
+                (darken(base_color, 0.5), 160)
+            };
+            TabColors {
+                bg,
+                alpha,
+                accent: Some(AccentStripe {
+                    color: base_color,
+                    position: AccentPosition::Bottom,
+                    thickness: 2,
+                }),
+            }
+        }
+        TabColorStyle::BottomStripe => {
+            let (bg, alpha) = default_bg(is_active, is_hover);
+            TabColors {
+                bg,
+                alpha,
+                accent: Some(AccentStripe {
+                    color: base_color,
+                    position: AccentPosition::Bottom,
+                    thickness: 3,
+                }),
+            }
+        }
+        TabColorStyle::TopStripe => {
+            let (bg, alpha) = default_bg(is_active, is_hover);
+            TabColors {
+                bg,
+                alpha,
+                accent: Some(AccentStripe {
+                    color: base_color,
+                    position: AccentPosition::Top,
+                    thickness: 3,
+                }),
+            }
+        }
+        TabColorStyle::LeftBar => {
+            let (bg, alpha) = default_bg(is_active, is_hover);
+            TabColors {
+                bg,
+                alpha,
+                accent: Some(AccentStripe {
+                    color: base_color,
+                    position: AccentPosition::Left,
+                    thickness: 3,
+                }),
+            }
+        }
+    }
+}
+
+/// Return the default background color and alpha for a tab state.
+fn default_bg(is_active: bool, is_hover: bool) -> (u32, u8) {
+    if is_hover {
+        (COLOR_HOVER, 220)
+    } else if is_active {
+        (COLOR_ACTIVE, 220)
+    } else {
+        (COLOR_INACTIVE, 160)
+    }
+}
 
 static OVERLAY_CLASS_UTF16: &[u16] = &[
     b'W' as u16,
@@ -446,6 +610,8 @@ pub fn update_overlay(
     group_id: GroupId,
     groups: &GroupManager,
     windows: &HashMap<HWND, WindowInfo>,
+    tab_color_rules: &[TabColorRule],
+    tab_color_style: TabColorStyle,
 ) {
     let Some(group) = groups.groups.get(&group_id) else {
         return;
@@ -477,14 +643,21 @@ pub fn update_overlay(
         );
     }
 
-    paint_tabs(overlay_hwnd, group, &rect, windows);
+    paint_tabs(overlay_hwnd, group, &rect, windows, tab_color_rules, tab_color_style);
 }
 
 /// Standalone version for calls from overlay wndproc (outside with_state).
 pub fn update_overlay_standalone(overlay_hwnd: HWND, group_id: GroupId) {
     state::with_state(|s| {
         if !s.overlays.desktop_hidden.contains(&group_id) {
-            update_overlay(overlay_hwnd, group_id, &s.groups, &s.windows);
+            update_overlay(
+                overlay_hwnd,
+                group_id,
+                &s.groups,
+                &s.windows,
+                &s.rules.tab_colors,
+                s.rules.tab_color_style,
+            );
         }
     });
 }
@@ -494,6 +667,8 @@ fn paint_tabs(
     group: &crate::group::TabGroup,
     rect: &RECT,
     windows: &HashMap<HWND, WindowInfo>,
+    tab_color_rules: &[TabColorRule],
+    tab_color_style: TabColorStyle,
 ) {
     unsafe {
         let width = (rect.right - rect.left).max(1);
@@ -578,12 +753,11 @@ fn paint_tabs(
             let is_active = i == group.active;
             let is_hover = i as i32 == hover_tab;
 
-            let color = if is_hover {
-                COLOR_HOVER
-            } else if is_active {
-                COLOR_ACTIVE
+            let tab_colors = if let Some(info) = windows.get(&hwnd) {
+                resolve_tab_color(info, tab_color_rules, tab_color_style, is_active, is_hover)
             } else {
-                COLOR_INACTIVE
+                let (bg, alpha) = default_bg(is_active, is_hover);
+                TabColors { bg, alpha, accent: None }
             };
 
             fill_rect_alpha(
@@ -594,9 +768,37 @@ fn paint_tabs(
                 0,
                 tab_width,
                 height,
-                color,
-                if is_active { 220 } else { 160 },
+                tab_colors.bg,
+                tab_colors.alpha,
             );
+
+            // Draw accent stripe if present
+            if let Some(accent) = tab_colors.accent {
+                let accent_alpha = if is_active { 255u8 } else { 200 };
+                match accent.position {
+                    AccentPosition::Bottom => {
+                        fill_rect_alpha(
+                            bits as *mut u32, width, height,
+                            x, height - accent.thickness, tab_width, accent.thickness,
+                            accent.color, accent_alpha,
+                        );
+                    }
+                    AccentPosition::Top => {
+                        fill_rect_alpha(
+                            bits as *mut u32, width, height,
+                            x, 0, tab_width, accent.thickness,
+                            accent.color, accent_alpha,
+                        );
+                    }
+                    AccentPosition::Left => {
+                        fill_rect_alpha(
+                            bits as *mut u32, width, height,
+                            x, 0, accent.thickness, height,
+                            accent.color, accent_alpha,
+                        );
+                    }
+                }
+            }
 
             let info = windows.get(&hwnd);
             if let Some(info) = info {
@@ -1225,21 +1427,29 @@ impl OverlayManager {
         group_id: GroupId,
         groups: &GroupManager,
         windows: &HashMap<HWND, WindowInfo>,
+        tab_color_rules: &[TabColorRule],
+        tab_color_style: TabColorStyle,
     ) {
         if !groups.groups.contains_key(&group_id) {
             self.remove_overlay(group_id);
             self.desktop_hidden.remove(&group_id);
         } else if let Some(&ov) = self.overlays.get(&group_id) {
             if !self.desktop_hidden.contains(&group_id) {
-                update_overlay(ov, group_id, groups, windows);
+                update_overlay(ov, group_id, groups, windows, tab_color_rules, tab_color_style);
             }
         }
     }
 
-    pub fn update_all(&self, groups: &GroupManager, windows: &HashMap<HWND, WindowInfo>) {
+    pub fn update_all(
+        &self,
+        groups: &GroupManager,
+        windows: &HashMap<HWND, WindowInfo>,
+        tab_color_rules: &[TabColorRule],
+        tab_color_style: TabColorStyle,
+    ) {
         for (&gid, &overlay) in &self.overlays {
             if !self.desktop_hidden.contains(&gid) {
-                update_overlay(overlay, gid, groups, windows);
+                update_overlay(overlay, gid, groups, windows, tab_color_rules, tab_color_style);
             }
         }
     }
@@ -1458,5 +1668,163 @@ mod tests {
     #[test]
     fn is_title_truncated_zero_available() {
         assert!(is_title_truncated(1, 0));
+    }
+
+    // --- darken / lighten ---
+
+    #[test]
+    fn darken_halves_brightness() {
+        // color = 0x00FF8040 (R=0x40, G=0x80, B=0xFF)
+        let result = darken(0x00FF8040, 0.5);
+        assert_eq!(result & 0xFF, 0x20);         // R: 0x40 * 0.5 = 0x20
+        assert_eq!((result >> 8) & 0xFF, 0x40);  // G: 0x80 * 0.5 = 0x40
+        assert_eq!((result >> 16) & 0xFF, 0x7F); // B: 0xFF * 0.5 ≈ 0x7F
+    }
+
+    #[test]
+    fn darken_zero_returns_black() {
+        assert_eq!(darken(0x00FFFFFF, 0.0), 0);
+    }
+
+    #[test]
+    fn lighten_clamps_to_255() {
+        let result = lighten(0x00FF00FF, 2.0);
+        assert_eq!(result & 0xFF, 0xFF);          // R clamped
+        assert_eq!((result >> 16) & 0xFF, 0xFF);  // B clamped
+    }
+
+    #[test]
+    fn lighten_factor_one_is_identity() {
+        let color = 0x00804020;
+        assert_eq!(lighten(color, 1.0), color);
+    }
+
+    // --- resolve_tab_color ---
+
+    fn make_test_info(title: &str) -> WindowInfo {
+        use windows_sys::Win32::Foundation::RECT;
+        WindowInfo {
+            hwnd: std::ptr::null_mut(),
+            title: title.to_string(),
+            process_name: "test.exe".to_string(),
+            class_name: "TestClass".to_string(),
+            icon: std::ptr::null_mut(),
+            rect: RECT { left: 0, top: 0, right: 100, bottom: 100 },
+            command_line: None,
+        }
+    }
+
+    #[test]
+    fn resolve_tab_color_no_rules_returns_defaults() {
+        let info = make_test_info("test window");
+        let tc = resolve_tab_color(&info, &[], TabColorStyle::TintStripe, true, false);
+        assert_eq!(tc.bg, COLOR_ACTIVE);
+        assert_eq!(tc.alpha, 220);
+        assert!(tc.accent.is_none());
+    }
+
+    #[test]
+    fn resolve_tab_color_no_match_returns_defaults() {
+        use crate::config::{Matcher, RuleField, WindowRule};
+        let rules = vec![TabColorRule {
+            rule: WindowRule {
+                field: RuleField::Title,
+                matcher: Matcher::Contains("SSH".into(), false),
+            },
+            color: 0x00578B2E,
+        }];
+        let info = make_test_info("not matching");
+        let tc = resolve_tab_color(&info, &rules, TabColorStyle::TintStripe, true, false);
+        assert_eq!(tc.bg, COLOR_ACTIVE);
+        assert!(tc.accent.is_none());
+    }
+
+    #[test]
+    fn resolve_tab_color_match_full_tint() {
+        use crate::config::{Matcher, RuleField, WindowRule};
+        let rules = vec![TabColorRule {
+            rule: WindowRule {
+                field: RuleField::Title,
+                matcher: Matcher::Contains("SSH".into(), false),
+            },
+            color: 0x00578B2E,
+        }];
+        let info = make_test_info("SSH: server1");
+        let tc = resolve_tab_color(&info, &rules, TabColorStyle::FullTint, true, false);
+        assert_eq!(tc.bg, 0x00578B2E); // active = base color
+        assert_eq!(tc.alpha, 220);
+        assert!(tc.accent.is_none());
+    }
+
+    #[test]
+    fn resolve_tab_color_match_tint_stripe_has_accent() {
+        use crate::config::{Matcher, RuleField, WindowRule};
+        let rules = vec![TabColorRule {
+            rule: WindowRule {
+                field: RuleField::Title,
+                matcher: Matcher::Contains("SSH".into(), false),
+            },
+            color: 0x00578B2E,
+        }];
+        let info = make_test_info("SSH: server1");
+        let tc = resolve_tab_color(&info, &rules, TabColorStyle::TintStripe, true, false);
+        assert_ne!(tc.bg, COLOR_ACTIVE); // tinted, not default
+        let accent = tc.accent.unwrap();
+        assert_eq!(accent.color, 0x00578B2E);
+        assert_eq!(accent.position, AccentPosition::Bottom);
+        assert_eq!(accent.thickness, 2);
+    }
+
+    #[test]
+    fn resolve_tab_color_bottom_stripe_uses_default_bg() {
+        use crate::config::{Matcher, RuleField, WindowRule};
+        let rules = vec![TabColorRule {
+            rule: WindowRule {
+                field: RuleField::Title,
+                matcher: Matcher::Contains("SSH".into(), false),
+            },
+            color: 0x00FF0000,
+        }];
+        let info = make_test_info("SSH: server1");
+        let tc = resolve_tab_color(&info, &rules, TabColorStyle::BottomStripe, true, false);
+        assert_eq!(tc.bg, COLOR_ACTIVE);
+        let accent = tc.accent.unwrap();
+        assert_eq!(accent.position, AccentPosition::Bottom);
+        assert_eq!(accent.thickness, 3);
+    }
+
+    #[test]
+    fn resolve_tab_color_left_bar() {
+        use crate::config::{Matcher, RuleField, WindowRule};
+        let rules = vec![TabColorRule {
+            rule: WindowRule {
+                field: RuleField::Title,
+                matcher: Matcher::Contains("SSH".into(), false),
+            },
+            color: 0x00FF0000,
+        }];
+        let info = make_test_info("SSH: server1");
+        let tc = resolve_tab_color(&info, &rules, TabColorStyle::LeftBar, false, false);
+        assert_eq!(tc.bg, COLOR_INACTIVE);
+        let accent = tc.accent.unwrap();
+        assert_eq!(accent.position, AccentPosition::Left);
+        assert_eq!(accent.thickness, 3);
+    }
+
+    #[test]
+    fn resolve_tab_color_top_stripe() {
+        use crate::config::{Matcher, RuleField, WindowRule};
+        let rules = vec![TabColorRule {
+            rule: WindowRule {
+                field: RuleField::Title,
+                matcher: Matcher::Contains("SSH".into(), false),
+            },
+            color: 0x00FF0000,
+        }];
+        let info = make_test_info("SSH: server1");
+        let tc = resolve_tab_color(&info, &rules, TabColorStyle::TopStripe, false, true);
+        assert_eq!(tc.bg, COLOR_HOVER);
+        let accent = tc.accent.unwrap();
+        assert_eq!(accent.position, AccentPosition::Top);
     }
 }
