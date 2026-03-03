@@ -3920,3 +3920,99 @@ fn acceptance_overlay_z_order_not_topmost() {
         DestroyWindow(covering);
     }
 }
+
+/// Reproduction test: windows that weren't tracked during init (e.g. they
+/// were DWM-cloaked on another virtual desktop) should be discovered when
+/// they receive focus after a desktop switch.
+///
+/// Uses dummy_window.exe (separate process) so the window passes
+/// is_eligible() — in-process windows are rejected by the PID check.
+///
+/// Old behavior: on_focus_changed ignores untracked windows → no tracking,
+/// no auto-grouping, no peek on the non-starting desktop.
+#[test]
+fn acceptance_cross_desktop_window_discovery() {
+    // Phase 0: spawn a dummy process with one window
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let dummy_path = std::path::Path::new(manifest_dir)
+        .join("target")
+        .join("debug")
+        .join("dummy_window.exe");
+    assert!(
+        dummy_path.exists(),
+        "dummy_window.exe not found. Run `cargo build --bin dummy_window` first."
+    );
+
+    let mut child = Command::new(&dummy_path)
+        .args(["1", "CrossDesktopTest"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .expect("Failed to spawn dummy_window.exe");
+
+    let child_pid = child.id();
+
+    // Wait for the window to appear
+    let mut hwnd: HWND = std::ptr::null_mut();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        pump_messages(Duration::from_millis(200));
+        let found: Vec<_> = window::enumerate_windows()
+            .into_iter()
+            .filter(|info| {
+                let mut pid = 0u32;
+                unsafe { GetWindowThreadProcessId(info.hwnd, &mut pid) };
+                pid == child_pid
+            })
+            .collect();
+        if !found.is_empty() {
+            hwnd = found[0].hwnd;
+            break;
+        }
+    }
+    assert!(
+        !hwnd.is_null(),
+        "dummy_window.exe window did not appear in time"
+    );
+
+    // Phase 1: do NOT insert into state — simulates a window that was
+    // cloaked (on another virtual desktop) when WinTab started.
+    let tracked_before = state::with_state(|s| s.windows.contains_key(&hwnd));
+    assert!(
+        !tracked_before,
+        "window should NOT be in state before on_focus_changed"
+    );
+
+    // Phase 2: simulate the user switching to the other desktop and
+    // this window getting focus (EVENT_SYSTEM_FOREGROUND fires).
+    state::with_state(|s| s.on_focus_changed(hwnd));
+    pump_messages(Duration::from_millis(100));
+
+    // The fix: on_focus_changed now discovers untracked windows, so
+    // auto-grouping and peek work across all virtual desktops.
+    let tracked_after = state::with_state(|s| s.windows.contains_key(&hwnd));
+    assert!(
+        tracked_after,
+        "window should be tracked after receiving focus"
+    );
+
+    // Clean up
+    state::with_state(|s| {
+        if let Some(gid) = s.groups.group_of(hwnd) {
+            s.groups.remove_from_group(hwnd);
+            s.overlays.refresh_overlay(
+                gid, &s.groups, &s.windows,
+                &s.rules.tab_colors, s.rules.tab_color_style,
+            );
+        }
+        s.windows.remove(&hwnd);
+        s.shutdown();
+    });
+    // Kill the child directly — the dummy process's PostQuitMessage
+    // targets its background thread, so the main thread stays stuck
+    // in GetMessageW unless something sends it a message.  Other
+    // tests' cleanup sends ShowWindow via remove_from_group, but
+    // this test has no groups to clean up.
+    let _ = child.kill();
+    let _ = child.wait();
+}
