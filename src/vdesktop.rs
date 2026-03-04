@@ -50,6 +50,12 @@ pub struct VDesktopManager {
     mock_off_desktop: std::collections::HashSet<isize>,
     #[cfg(test)]
     mock_desktop_id: Option<[u8; 16]>,
+    #[cfg(test)]
+    mock_per_window_desktop: std::collections::HashMap<isize, [u8; 16]>,
+    #[cfg(test)]
+    mock_moves: Vec<(isize, [u8; 16])>,
+    #[cfg(test)]
+    mock_desktop_order: Option<Vec<[u8; 16]>>,
 }
 
 // SAFETY: VDesktopManager is only used from the single UI thread.
@@ -66,9 +72,6 @@ pub fn guid_to_bytes(guid: &windows_sys::core::GUID) -> [u8; 16] {
 }
 
 /// Convert a 16-byte array back to a COM GUID (little-endian field layout).
-/// Currently unused in production (desktop restore is deferred), but tested
-/// and kept for future opt-in restore features.
-#[allow(dead_code)]
 pub fn bytes_to_guid(bytes: &[u8; 16]) -> windows_sys::core::GUID {
     windows_sys::core::GUID {
         data1: u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
@@ -78,6 +81,82 @@ pub fn bytes_to_guid(bytes: &[u8; 16]) -> windows_sys::core::GUID {
             bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
         ],
     }
+}
+
+/// Find the index of a desktop ID in the ordered list.
+pub fn desktop_index_of(id: &[u8; 16], order: &[[u8; 16]]) -> Option<usize> {
+    order.iter().position(|d| d == id)
+}
+
+/// Read the virtual desktop order from the registry.
+/// Returns desktop IDs in left-to-right order.
+/// `VirtualDesktopIDs` is a REG_BINARY value containing concatenated 16-byte GUIDs.
+fn read_desktop_order_from_registry() -> Option<Vec<[u8; 16]>> {
+    use windows_sys::Win32::System::Registry::*;
+
+    let subkey: Vec<u16> =
+        "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VirtualDesktops\0"
+            .encode_utf16()
+            .collect();
+    let value_name: Vec<u16> = "VirtualDesktopIDs\0".encode_utf16().collect();
+
+    unsafe {
+        let mut hkey: HKEY = std::ptr::null_mut();
+        let res = RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            subkey.as_ptr(),
+            0,
+            KEY_READ,
+            &mut hkey,
+        );
+        if res != 0 || hkey.is_null() {
+            return None;
+        }
+
+        // First query to get size
+        let mut data_type: u32 = 0;
+        let mut data_size: u32 = 0;
+        let res = RegQueryValueExW(
+            hkey,
+            value_name.as_ptr(),
+            std::ptr::null(),
+            &mut data_type,
+            std::ptr::null_mut(),
+            &mut data_size,
+        );
+        if res != 0 || data_type != REG_BINARY || data_size == 0 {
+            RegCloseKey(hkey);
+            return None;
+        }
+
+        let mut buf = vec![0u8; data_size as usize];
+        let res = RegQueryValueExW(
+            hkey,
+            value_name.as_ptr(),
+            std::ptr::null(),
+            &mut data_type,
+            buf.as_mut_ptr(),
+            &mut data_size,
+        );
+        RegCloseKey(hkey);
+
+        if res != 0 {
+            return None;
+        }
+
+        Some(parse_desktop_order_blob(&buf[..data_size as usize]))
+    }
+}
+
+/// Parse a raw registry blob of concatenated 16-byte GUIDs into a Vec.
+pub fn parse_desktop_order_blob(blob: &[u8]) -> Vec<[u8; 16]> {
+    blob.chunks_exact(16)
+        .map(|chunk| {
+            let mut id = [0u8; 16];
+            id.copy_from_slice(chunk);
+            id
+        })
+        .collect()
 }
 
 impl VDesktopManager {
@@ -100,7 +179,27 @@ impl VDesktopManager {
                 mock_off_desktop: std::collections::HashSet::new(),
                 #[cfg(test)]
                 mock_desktop_id: None,
+                #[cfg(test)]
+                mock_per_window_desktop: std::collections::HashMap::new(),
+                #[cfg(test)]
+                mock_moves: Vec::new(),
+                #[cfg(test)]
+                mock_desktop_order: None,
             })
+        }
+    }
+
+    /// Create a VDesktopManager with a null COM pointer for testing.
+    /// Uses mock fields exclusively — no real COM calls.
+    #[cfg(test)]
+    pub fn new_null_for_test() -> Self {
+        VDesktopManager {
+            ptr: std::ptr::null_mut(),
+            mock_off_desktop: std::collections::HashSet::new(),
+            mock_desktop_id: None,
+            mock_per_window_desktop: std::collections::HashMap::new(),
+            mock_moves: Vec::new(),
+            mock_desktop_order: None,
         }
     }
 
@@ -122,12 +221,33 @@ impl VDesktopManager {
         self.mock_desktop_id = id;
     }
 
+    #[cfg(test)]
+    pub fn set_mock_window_desktop(&mut self, hwnd: HWND, desktop_id: [u8; 16]) {
+        self.mock_per_window_desktop
+            .insert(hwnd as isize, desktop_id);
+    }
+
+    #[cfg(test)]
+    pub fn set_mock_desktop_order(&mut self, order: Vec<[u8; 16]>) {
+        self.mock_desktop_order = Some(order);
+    }
+
+    #[cfg(test)]
+    pub fn take_mock_moves(&mut self) -> Vec<(isize, [u8; 16])> {
+        std::mem::take(&mut self.mock_moves)
+    }
+
     /// Get the virtual desktop GUID for the given window.
     /// Returns None on failure or if COM is unavailable.
     pub fn get_desktop_id(&self, hwnd: HWND) -> Option<[u8; 16]> {
         #[cfg(test)]
-        if self.mock_desktop_id.is_some() {
-            return self.mock_desktop_id;
+        {
+            if let Some(id) = self.mock_per_window_desktop.get(&(hwnd as isize)) {
+                return Some(*id);
+            }
+            if self.mock_desktop_id.is_some() {
+                return self.mock_desktop_id;
+            }
         }
         if self.ptr.is_null() {
             return None;
@@ -145,19 +265,35 @@ impl VDesktopManager {
 
     /// Move a window to the virtual desktop identified by the given GUID bytes.
     /// Returns true on success.
-    /// Currently unused in production (desktop restore is deferred), but tested
-    /// and kept for future opt-in restore features.
-    #[allow(dead_code)]
-    pub fn move_to_desktop(&self, hwnd: HWND, desktop_id: &[u8; 16]) -> bool {
-        if self.ptr.is_null() {
-            return false;
+    pub fn move_to_desktop(&mut self, hwnd: HWND, desktop_id: &[u8; 16]) -> bool {
+        #[cfg(test)]
+        {
+            self.mock_moves.push((hwnd as isize, *desktop_id));
+            self.mock_per_window_desktop
+                .insert(hwnd as isize, *desktop_id);
+            return true;
         }
-        unsafe {
-            let vtbl = &*(*self.ptr).vtbl;
-            let guid = bytes_to_guid(desktop_id);
-            let hr = (vtbl.move_window_to_desktop)(self.ptr, hwnd, &guid);
-            hr >= 0
+        #[allow(unreachable_code)]
+        {
+            if self.ptr.is_null() {
+                return false;
+            }
+            unsafe {
+                let vtbl = &*(*self.ptr).vtbl;
+                let guid = bytes_to_guid(desktop_id);
+                let hr = (vtbl.move_window_to_desktop)(self.ptr, hwnd, &guid);
+                hr >= 0
+            }
         }
+    }
+
+    /// Get the ordered list of virtual desktop IDs (left-to-right).
+    pub fn get_desktop_order(&self) -> Option<Vec<[u8; 16]>> {
+        #[cfg(test)]
+        if self.mock_desktop_order.is_some() {
+            return self.mock_desktop_order.clone();
+        }
+        read_desktop_order_from_registry()
     }
 
     pub fn is_on_current_desktop(&self, hwnd: HWND) -> bool {
@@ -196,11 +332,7 @@ mod tests {
     use super::*;
 
     fn null_manager() -> VDesktopManager {
-        VDesktopManager {
-            ptr: std::ptr::null_mut(),
-            mock_off_desktop: std::collections::HashSet::new(),
-            mock_desktop_id: None,
-        }
+        VDesktopManager::new_null_for_test()
     }
 
     #[test]
@@ -268,9 +400,98 @@ mod tests {
     }
 
     #[test]
-    fn move_to_desktop_returns_false_when_ptr_null() {
-        let mgr = null_manager();
-        let id = [0u8; 16];
-        assert!(!mgr.move_to_desktop(1 as HWND, &id));
+    fn move_to_desktop_records_mock_move() {
+        let mut mgr = null_manager();
+        let id = [0xAA; 16];
+        assert!(mgr.move_to_desktop(1 as HWND, &id));
+        let moves = mgr.take_mock_moves();
+        assert_eq!(moves.len(), 1);
+        assert_eq!(moves[0], (1, [0xAA; 16]));
+        // Per-window desktop should be updated
+        assert_eq!(mgr.get_desktop_id(1 as HWND), Some([0xAA; 16]));
+    }
+
+    #[test]
+    fn per_window_desktop_id_overrides_global_mock() {
+        let mut mgr = null_manager();
+        let global_id = [0x11; 16];
+        let per_window_id = [0x22; 16];
+        mgr.set_mock_desktop_id(Some(global_id));
+        mgr.set_mock_window_desktop(1 as HWND, per_window_id);
+        // Per-window should take priority
+        assert_eq!(mgr.get_desktop_id(1 as HWND), Some(per_window_id));
+        // Other windows fall back to global
+        assert_eq!(mgr.get_desktop_id(2 as HWND), Some(global_id));
+    }
+
+    #[test]
+    fn mock_desktop_order() {
+        let mut mgr = null_manager();
+        let d1 = [0x01; 16];
+        let d2 = [0x02; 16];
+        mgr.set_mock_desktop_order(vec![d1, d2]);
+        let order = mgr.get_desktop_order().unwrap();
+        assert_eq!(order, vec![d1, d2]);
+    }
+
+    #[test]
+    fn desktop_index_of_found() {
+        let d1 = [0x01; 16];
+        let d2 = [0x02; 16];
+        let d3 = [0x03; 16];
+        let order = vec![d1, d2, d3];
+        assert_eq!(desktop_index_of(&d1, &order), Some(0));
+        assert_eq!(desktop_index_of(&d2, &order), Some(1));
+        assert_eq!(desktop_index_of(&d3, &order), Some(2));
+    }
+
+    #[test]
+    fn desktop_index_of_not_found() {
+        let d1 = [0x01; 16];
+        let d2 = [0x02; 16];
+        let unknown = [0xFF; 16];
+        let order = vec![d1, d2];
+        assert_eq!(desktop_index_of(&unknown, &order), None);
+    }
+
+    #[test]
+    fn desktop_index_of_empty_order() {
+        let id = [0x01; 16];
+        let order: Vec<[u8; 16]> = Vec::new();
+        assert_eq!(desktop_index_of(&id, &order), None);
+    }
+
+    #[test]
+    fn desktop_index_of_single_desktop() {
+        let d1 = [0x01; 16];
+        let order = vec![d1];
+        assert_eq!(desktop_index_of(&d1, &order), Some(0));
+    }
+
+    #[test]
+    fn parse_desktop_order_blob_valid() {
+        let d1 = [0x01; 16];
+        let d2 = [0x02; 16];
+        let mut blob = Vec::new();
+        blob.extend_from_slice(&d1);
+        blob.extend_from_slice(&d2);
+        let result = parse_desktop_order_blob(&blob);
+        assert_eq!(result, vec![d1, d2]);
+    }
+
+    #[test]
+    fn parse_desktop_order_blob_empty() {
+        let result = parse_desktop_order_blob(&[]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn parse_desktop_order_blob_partial_guid_ignored() {
+        // 20 bytes = 1 full GUID (16) + 4 leftover (ignored by chunks_exact)
+        let mut blob = vec![0xAA; 20];
+        blob[0..16].copy_from_slice(&[0xBB; 16]);
+        let result = parse_desktop_order_blob(&blob);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], [0xBB; 16]);
     }
 }

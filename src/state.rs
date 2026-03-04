@@ -554,6 +554,8 @@ impl AppState {
         // Check if there's an existing named group
         if let Some(&gid) = self.groups.named_groups.get(&group_name) {
             if self.groups.groups.contains_key(&gid) {
+                // Move new window to the group's desktop if different
+                self.move_to_group_desktop(gid, hwnd);
                 self.groups.add_to_group(gid, hwnd);
                 self.overlays
                     .refresh_overlay(gid, &self.groups, &self.windows, &self.rules.tab_colors, self.rules.tab_color_style);
@@ -564,7 +566,10 @@ impl AppState {
         // Check if there's a pending singleton
         if let Some(pending_hwnd) = self.groups.pending_rules.remove(&group_name) {
             if pending_hwnd != hwnd && self.windows.contains_key(&pending_hwnd) {
-                let gid = self.groups.create_group(pending_hwnd, hwnd);
+                // If windows are on different desktops, consolidate to leftmost
+                let (anchor, active) =
+                    self.resolve_cross_desktop_pair(pending_hwnd, hwnd);
+                let gid = self.groups.create_group(anchor, active);
                 self.groups.named_groups.insert(group_name.clone(), gid);
                 self.try_restore_group_position(gid, &group_name);
                 let ov = self.overlays.ensure_overlay(gid);
@@ -575,6 +580,80 @@ impl AppState {
 
         // Record as pending singleton
         self.groups.pending_rules.insert(group_name, hwnd);
+    }
+
+    /// Resolve a cross-desktop pair: if the two windows are on different
+    /// desktops, move the one NOT on the leftmost desktop to the leftmost.
+    /// Returns (anchor, active) where anchor is the window already on the
+    /// target desktop (its rect is reliable), and active is the moved window.
+    /// Falls back to (pending_hwnd, new_hwnd) if desktops can't be determined.
+    fn resolve_cross_desktop_pair(&mut self, pending_hwnd: HWND, new_hwnd: HWND) -> (HWND, HWND) {
+        let vd = match &mut self.vdesktop {
+            Some(vd) => vd,
+            None => return (pending_hwnd, new_hwnd),
+        };
+
+        let id_a = match vd.get_desktop_id(pending_hwnd) {
+            Some(id) => id,
+            None => return (pending_hwnd, new_hwnd),
+        };
+        let id_b = match vd.get_desktop_id(new_hwnd) {
+            Some(id) => id,
+            None => return (pending_hwnd, new_hwnd),
+        };
+
+        if id_a == id_b {
+            return (pending_hwnd, new_hwnd);
+        }
+
+        let order = match vd.get_desktop_order() {
+            Some(o) if !o.is_empty() => o,
+            _ => return (pending_hwnd, new_hwnd),
+        };
+
+        let idx_a = crate::vdesktop::desktop_index_of(&id_a, &order);
+        let idx_b = crate::vdesktop::desktop_index_of(&id_b, &order);
+
+        match (idx_a, idx_b) {
+            (Some(ia), Some(ib)) if ia <= ib => {
+                // pending_hwnd is on leftmost (or same) — move new_hwnd there
+                vd.move_to_desktop(new_hwnd, &id_a);
+                (pending_hwnd, new_hwnd)
+            }
+            (Some(_), Some(_)) => {
+                // new_hwnd is on leftmost — move pending_hwnd there
+                vd.move_to_desktop(pending_hwnd, &id_b);
+                (new_hwnd, pending_hwnd)
+            }
+            _ => (pending_hwnd, new_hwnd),
+        }
+    }
+
+    /// Move a window to the same desktop as the group's active window,
+    /// if they differ.
+    fn move_to_group_desktop(&mut self, gid: crate::group::GroupId, hwnd: HWND) {
+        let active_hwnd = match self.groups.groups.get(&gid) {
+            Some(g) => g.active_hwnd(),
+            None => return,
+        };
+
+        let vd = match &mut self.vdesktop {
+            Some(vd) => vd,
+            None => return,
+        };
+
+        let group_desktop = match vd.get_desktop_id(active_hwnd) {
+            Some(id) => id,
+            None => return,
+        };
+        let window_desktop = match vd.get_desktop_id(hwnd) {
+            Some(id) => id,
+            None => return,
+        };
+
+        if group_desktop != window_desktop {
+            vd.move_to_desktop(hwnd, &group_desktop);
+        }
     }
 
     /// Try to restore a window's saved position from the position store.

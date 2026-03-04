@@ -1671,6 +1671,11 @@ fn acceptance_tooltip_shows_truncated_title() {
 // ── Rules engine acceptance tests ──
 
 /// Build a WindowInfo with explicit process_name and class_name.
+/// Create a VDesktopManager with a null COM pointer (for mock-only testing).
+fn vdesktop_null_manager() -> crate::vdesktop::VDesktopManager {
+    crate::vdesktop::VDesktopManager::new_null_for_test()
+}
+
 fn make_window_info_with_meta(hwnd: HWND, process_name: &str, class_name: &str) -> WindowInfo {
     WindowInfo {
         hwnd,
@@ -4015,4 +4020,220 @@ fn acceptance_cross_desktop_window_discovery() {
     // this test has no groups to clean up.
     let _ = child.kill();
     let _ = child.wait();
+}
+
+#[test]
+fn acceptance_cross_desktop_auto_group_moves_to_leftmost() {
+    // Verify: when apply_rules groups two windows on different virtual
+    // desktops, the window on the rightmost desktop is moved to the
+    // leftmost desktop before grouping.
+    overlay::register_class();
+    let test_class = register_test_class();
+
+    let win1 = create_test_window(&test_class, "CrossDesk A");
+    let win2 = create_test_window(&test_class, "CrossDesk B");
+    assert!(!win1.is_null());
+    assert!(!win2.is_null());
+
+    pump_messages(Duration::from_millis(200));
+
+    state::with_state(|s| {
+        use crate::config::*;
+
+        // Set up rules: match process "crossdesk.exe"
+        s.rules = RulesEngine {
+            groups: vec![RuleGroup {
+                name: "CrossDeskApps".into(),
+                enabled: true,
+                match_mode: MatchMode::All,
+                rules: vec![WindowRule {
+                    field: RuleField::ProcessName,
+                    matcher: Matcher::Equals("crossdesk.exe".into(), false),
+                }],
+            }],
+            preview_config: PreviewConfig::default(),
+            tab_colors: Vec::new(),
+            tab_color_style: TabColorStyle::default(),
+        };
+
+        // Set up mock VDesktopManager with per-window desktops
+        let mut vd = vdesktop_null_manager();
+        let desktop_left = [0x01; 16];
+        let desktop_right = [0x02; 16];
+        vd.set_mock_window_desktop(win1, desktop_right); // win1 on right desktop
+        vd.set_mock_window_desktop(win2, desktop_left); // win2 on left desktop
+        vd.set_mock_desktop_order(vec![desktop_left, desktop_right]);
+        s.vdesktop = Some(vd);
+
+        // Insert windows
+        s.windows.insert(
+            win1,
+            make_window_info_with_meta(win1, "crossdesk.exe", "CrossClass"),
+        );
+        s.windows.insert(
+            win2,
+            make_window_info_with_meta(win2, "crossdesk.exe", "CrossClass"),
+        );
+
+        // Apply rules: win1 becomes pending singleton
+        s.apply_rules(win1);
+        assert!(
+            s.groups.pending_rules.contains_key("CrossDeskApps"),
+            "First window should be pending singleton"
+        );
+
+        // Apply rules: win2 triggers group creation with cross-desktop move
+        s.apply_rules(win2);
+
+        // Verify group was created
+        let gid_1 = s.groups.group_of(win1);
+        let gid_2 = s.groups.group_of(win2);
+        assert!(gid_1.is_some(), "win1 should be in a group");
+        assert_eq!(gid_1, gid_2, "Both windows should be in the same group");
+
+        let gid = gid_1.unwrap();
+        assert!(
+            s.overlays.overlays.contains_key(&gid),
+            "Overlay should exist"
+        );
+
+        // Verify move_to_desktop was called for win1 (the one on the right desktop)
+        let vd = s.vdesktop.as_mut().unwrap();
+        let moves = vd.take_mock_moves();
+        assert_eq!(moves.len(), 1, "Exactly one move should have occurred");
+        assert_eq!(
+            moves[0].0, win1 as isize,
+            "win1 (on right desktop) should have been moved"
+        );
+        assert_eq!(
+            moves[0].1, desktop_left,
+            "win1 should have been moved to the left desktop"
+        );
+
+        // win2 (already on left) should be the anchor (hwnd_a in create_group),
+        // so it provides the reliable rect. win1 is the active (last) tab.
+        let group = s.groups.groups.get(&gid).unwrap();
+        assert_eq!(group.tabs.len(), 2);
+
+        // Cleanup
+        s.overlays.remove_overlay(gid);
+        s.groups.remove_from_group(win1);
+        s.groups.remove_from_group(win2);
+        s.windows.clear();
+        s.rules = RulesEngine::empty();
+        s.vdesktop = None;
+    });
+
+    unsafe {
+        DestroyWindow(win1);
+        DestroyWindow(win2);
+    }
+}
+
+#[test]
+fn acceptance_cross_desktop_add_to_group_moves_window() {
+    // Verify: when a third window on a different desktop joins an existing
+    // group, it's moved to the group's desktop first.
+    overlay::register_class();
+    let test_class = register_test_class();
+
+    let win1 = create_test_window(&test_class, "AddGroup A");
+    let win2 = create_test_window(&test_class, "AddGroup B");
+    let win3 = create_test_window(&test_class, "AddGroup C");
+    assert!(!win1.is_null());
+    assert!(!win2.is_null());
+    assert!(!win3.is_null());
+
+    pump_messages(Duration::from_millis(200));
+
+    state::with_state(|s| {
+        use crate::config::*;
+
+        s.rules = RulesEngine {
+            groups: vec![RuleGroup {
+                name: "AddGroupApps".into(),
+                enabled: true,
+                match_mode: MatchMode::All,
+                rules: vec![WindowRule {
+                    field: RuleField::ProcessName,
+                    matcher: Matcher::Equals("addgroup.exe".into(), false),
+                }],
+            }],
+            preview_config: PreviewConfig::default(),
+            tab_colors: Vec::new(),
+            tab_color_style: TabColorStyle::default(),
+        };
+
+        let desktop_a = [0x0A; 16];
+        let desktop_b = [0x0B; 16];
+        let mut vd = vdesktop_null_manager();
+        // win1 and win2 on same desktop, win3 on a different one
+        vd.set_mock_window_desktop(win1, desktop_a);
+        vd.set_mock_window_desktop(win2, desktop_a);
+        vd.set_mock_window_desktop(win3, desktop_b);
+        vd.set_mock_desktop_order(vec![desktop_a, desktop_b]);
+        s.vdesktop = Some(vd);
+
+        s.windows.insert(
+            win1,
+            make_window_info_with_meta(win1, "addgroup.exe", "AddClass"),
+        );
+        s.windows.insert(
+            win2,
+            make_window_info_with_meta(win2, "addgroup.exe", "AddClass"),
+        );
+        s.windows.insert(
+            win3,
+            make_window_info_with_meta(win3, "addgroup.exe", "AddClass"),
+        );
+
+        // Create group from first two (same desktop, no moves)
+        s.apply_rules(win1); // pending
+        s.apply_rules(win2); // creates group
+
+        let gid = s.groups.group_of(win1).unwrap();
+        assert_eq!(s.groups.groups.get(&gid).unwrap().tabs.len(), 2);
+
+        // Drain any moves from group creation (should be 0 — same desktop)
+        let vd = s.vdesktop.as_mut().unwrap();
+        let creation_moves = vd.take_mock_moves();
+        assert!(
+            creation_moves.is_empty(),
+            "No moves needed when both windows on same desktop"
+        );
+
+        // Apply rules for win3 — should join existing group and be moved
+        s.apply_rules(win3);
+
+        assert_eq!(
+            s.groups.group_of(win3),
+            Some(gid),
+            "win3 should join the existing group"
+        );
+        assert_eq!(s.groups.groups.get(&gid).unwrap().tabs.len(), 3);
+
+        let vd = s.vdesktop.as_mut().unwrap();
+        let moves = vd.take_mock_moves();
+        assert_eq!(moves.len(), 1, "win3 should have been moved");
+        assert_eq!(moves[0].0, win3 as isize);
+        assert_eq!(
+            moves[0].1, desktop_a,
+            "win3 should be moved to the group's desktop"
+        );
+
+        // Cleanup
+        s.overlays.remove_overlay(gid);
+        s.groups.remove_from_group(win1);
+        s.groups.remove_from_group(win2);
+        s.groups.remove_from_group(win3);
+        s.windows.clear();
+        s.rules = RulesEngine::empty();
+        s.vdesktop = None;
+    });
+
+    unsafe {
+        DestroyWindow(win1);
+        DestroyWindow(win2);
+        DestroyWindow(win3);
+    }
 }
